@@ -553,7 +553,7 @@ Being explicit about the limits of a 3-day build:
 
 | # | Deliverable | Where |
 | --- | --- | --- |
-| 1 | Repository with clear commit history (no squash) | this repo — 19 focused commits |
+| 1 | Repository with clear commit history (no squash) | this repo — one focused commit per feature |
 | 2 | README: setup, env vars, architecture, schema rationale | this file |
 | 3 | API documentation with sample requests/responses | `/api/v1/docs`, [`docs/openapi.json`](docs/openapi.json) |
 | 4 | Schema diagram (dbdiagram.io) + tree/indexing rationale | [`docs/schema.dbml`](docs/schema.dbml) |

@@ -31,3 +31,6 @@ tmp/
 
 # Local scratch database used for verification only
 .localdb/
+
+# Assistant/tooling metadata - not part of the project source
+.workbuddy-ai/
