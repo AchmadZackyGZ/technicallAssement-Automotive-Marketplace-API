@@ -8,6 +8,7 @@
  */
 
 const logger = require('../../utils/logger');
+const cache = require('../../utils/cache');
 const { slugify } = require('../../utils/helpers');
 const { NotFoundError, BadRequestError, ConflictError } = require('../../utils/errors');
 const repository = require('./categories.repository');
@@ -135,6 +136,8 @@ async function createCategory(input) {
     });
 
     logger.info('Category created', { categoryId: category.id, slug: category.slug, depth: category.depth });
+    // The tree is part of every cached filter response.
+    await cache.invalidateCatalog();
     return category;
   } catch (error) {
     if (error.code === '23505') {
@@ -168,6 +171,7 @@ async function updateCategory(id, input) {
   if (!category) throw new NotFoundError('Category');
 
   logger.info('Category updated', { categoryId: id });
+  await cache.invalidateCatalog();
   return category;
 }
 
@@ -205,6 +209,9 @@ async function moveCategory(id, newParentId) {
   if (!moved) throw new NotFoundError('Category');
 
   logger.info('Category moved', { categoryId: id, newParentId: normalisedParentId, descendantsUpdated });
+  // A move rewrites the materialized paths, so cached facet scopes are stale.
+  await cache.invalidateCatalog();
+
   return { ...moved, descendantsUpdated };
 }
 
@@ -220,6 +227,7 @@ async function deleteCategory(id) {
   if (!deleted) throw new NotFoundError('Category');
 
   logger.info('Category deleted', { categoryId: id });
+  await cache.invalidateCatalog();
   return { id };
 }
 

@@ -106,6 +106,9 @@ async function del(key) {
 /**
  * Delete every key belonging to a namespace using a non-blocking SCAN loop.
  * Used to invalidate cached search/facet results when listings change.
+ *
+ * SCAN is used rather than KEYS because KEYS blocks the whole server while it
+ * walks the keyspace - unacceptable on a shared Redis.
  */
 async function invalidateNamespace(namespace) {
   if (!isEnabled()) return 0;
@@ -117,9 +120,14 @@ async function invalidateNamespace(namespace) {
     do {
       // eslint-disable-next-line no-await-in-loop -- SCAN is inherently sequential
       const reply = await client.scan(cursor, { MATCH: pattern, COUNT: 200 });
-      cursor = reply.cursor;
+
+      // node-redis normalises the returned cursor to a number, so it must be
+      // coerced back to a string. Comparing `0 !== '0'` would never be false and
+      // the loop would spin forever.
+      cursor = String(reply.cursor ?? '0');
+
       if (reply.keys.length) {
-        // eslint-disable-next-line no-await-in-loop
+        // eslint-disable-next-line no-await-in-loop -- batched with the scan above
         deleted += await client.del(reply.keys);
       }
     } while (cursor !== '0');

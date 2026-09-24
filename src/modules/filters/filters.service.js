@@ -24,6 +24,7 @@
 
 const db = require('../../utils/db');
 const logger = require('../../utils/logger');
+const cache = require('../../utils/cache');
 const { buildListingQuery } = require('../listings/listings.query');
 const repository = require('./filters.repository');
 const categoriesRepository = require('../categories/categories.repository');
@@ -437,8 +438,21 @@ async function computeFacets(input, { categoryIds = null, scopeCategoryId = null
 
 /**
  * GET /filters - every filter option with counts, plus the category counts.
+ *
+ * Cached under the request object: this endpoint runs the full set of facet
+ * aggregations, and a filter panel is fetched on every page view while the
+ * underlying data changes rarely.
  */
 async function getFilterOptions(input, { scopeCategoryId = null } = {}) {
+  const cacheInput = { ...input, scopeCategoryId };
+  const { value, cached } = await cache.remember('filters', cacheInput, () =>
+    computeFilterOptions(input, scopeCategoryId),
+  );
+
+  return { ...value, cached };
+}
+
+async function computeFilterOptions(input, scopeCategoryId) {
   const categoryIds = scopeCategoryId
     ? await categoriesRepository.findSubtreeIds(scopeCategoryId)
     : null;

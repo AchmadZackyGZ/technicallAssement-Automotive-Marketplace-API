@@ -22,11 +22,38 @@ function slugify(input) {
 }
 
 /**
+ * Recursively sort object keys so that two structurally identical values always
+ * serialise to the same string.
+ *
+ * Cache keys are derived from request objects, and `{ make, city }` must hash the
+ * same as `{ city, make }` - otherwise the cache would miss depending on the
+ * order the client happened to send its query parameters in.
+ */
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((accumulator, key) => {
+        accumulator[key] = sortKeysDeep(value[key]);
+        return accumulator;
+      }, {});
+  }
+
+  return value;
+}
+
+/**
  * Deterministic SHA-1 digest used to build compact, stable cache keys from
  * arbitrarily long query objects.
  */
 function stableHash(value) {
-  return crypto.createHash('sha1').update(JSON.stringify(value)).digest('hex').slice(0, 16);
+  return crypto
+    .createHash('sha1')
+    .update(JSON.stringify(sortKeysDeep(value)))
+    .digest('hex')
+    .slice(0, 16);
 }
 
 /** Random integer in `[min, max]` inclusive. */
@@ -82,6 +109,7 @@ function toPlain(row) {
 module.exports = {
   slugify,
   stableHash,
+  sortKeysDeep,
   randomInt,
   randomItem,
   randomItems,

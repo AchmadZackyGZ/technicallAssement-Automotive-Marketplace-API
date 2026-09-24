@@ -14,6 +14,7 @@
  */
 
 const logger = require('../../utils/logger');
+const cache = require('../../utils/cache');
 const { NotFoundError, BadRequestError, ValidationError } = require('../../utils/errors');
 const { decodeCursor, normaliseLimit, buildPage } = require('../../utils/pagination');
 const categoriesRepository = require('../categories/categories.repository');
@@ -208,6 +209,9 @@ async function createListing(sellerId, input) {
     attributes: attributeRows.length,
   });
 
+  // A new listing changes result sets and every facet count.
+  await cache.invalidateCatalog();
+
   return repository.findByIdWithDetails(listing.id, { includeRemoved: true });
 }
 
@@ -264,6 +268,8 @@ async function updateListing(id, input) {
   if (!listing) throw new NotFoundError('Listing');
 
   logger.info('Listing updated', { listingId: id, categoryChanged });
+  await cache.invalidateCatalog();
+
   return repository.findByIdWithDetails(id, { includeRemoved: true });
 }
 
@@ -294,6 +300,9 @@ async function deleteListing(id) {
 
   const listing = await repository.softDelete(id);
   logger.info('Listing soft-deleted', { listingId: id });
+
+  // Soft-deleted listings disappear from every browse, search and facet result.
+  await cache.invalidateCatalog();
 
   return { alreadyRemoved: false, listing: listing ?? existing };
 }

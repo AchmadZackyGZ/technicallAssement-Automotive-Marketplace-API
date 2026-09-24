@@ -15,6 +15,7 @@
  */
 
 const logger = require('../../utils/logger');
+const cache = require('../../utils/cache');
 const { browseListings, resolveCategoryScope } = require('../listings/listings.service');
 const filtersService = require('../filters/filters.service');
 const repository = require('./search.repository');
@@ -22,10 +23,19 @@ const repository = require('./search.repository');
 /**
  * Full-text search with faceted counts.
  *
+ * The whole response - rows, pagination and facets - is cached under a key
+ * derived from the request, because the expensive part is the facet aggregation
+ * and it depends only on the filters, never on the cursor.
+ *
  * @param {object} input Validated search query
- * @returns {Promise<{ items: object[], pagination: object, query: ?string, facets: ?object }>}
+ * @returns {Promise<{ items: object[], pagination: object, query: ?string, facets: ?object, cached: boolean }>}
  */
 async function searchListings(input) {
+  const { value, cached } = await cache.remember('search', input, () => runSearch(input));
+  return { ...value, cached };
+}
+
+async function runSearch(input) {
   const { items, pagination } = await browseListings(input);
 
   const result = { items, pagination, query: input.q ?? null };
@@ -60,10 +70,18 @@ async function searchListings(input) {
  * one listing, and each carries its count for the UI to display. Matching and
  * ranking are explained in search.repository.js.
  *
+ * Suggestions are cached because a keystroke-driven endpoint is hit far more
+ * often than the underlying data changes.
+ *
  * @param {object} input Validated suggest query
- * @returns {Promise<{ query: string, suggestions: object, total: number }>}
+ * @returns {Promise<{ query: string, suggestions: object, total: number, cached: boolean }>}
  */
 async function suggest(input) {
+  const { value, cached } = await cache.remember('suggest', input, () => runSuggest(input));
+  return { ...value, cached };
+}
+
+async function runSuggest(input) {
   const term = input.q.trim();
   const types = input.types ?? ['make', 'model', 'city'];
 

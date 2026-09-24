@@ -11,9 +11,11 @@ const categoriesRepository = require('../categories/categories.repository');
 
 /**
  * Shape the service output into the public response.
- * `valueLimit` is a request knob, not part of the answer.
+ * `cached` becomes an `X-Cache` header so the cache is observable from outside.
  */
-function present(options) {
+function present(res, options) {
+  res.set('X-Cache', options.cached ? 'HIT' : 'MISS');
+
   return {
     data: {
       scope: options.scope,
@@ -28,7 +30,7 @@ function present(options) {
 /** GET /filters - global filter options with counts. */
 const list = asyncHandler(async (req, res) => {
   const options = await service.getFilterOptions(req.query, {});
-  res.json(present(options));
+  res.json(present(res, options));
 });
 
 /** GET /filters/:categoryId - the filter set a category exposes. */
@@ -41,7 +43,7 @@ const byCategory = asyncHandler(async (req, res) => {
   const options = await service.getFilterOptions(req.query, { scopeCategoryId: categoryId });
 
   res.json({
-    ...present(options),
+    ...present(res, options),
     meta: {
       category: {
         id: category.id,
