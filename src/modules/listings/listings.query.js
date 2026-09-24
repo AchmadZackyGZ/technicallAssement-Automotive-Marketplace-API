@@ -79,14 +79,53 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
   };
 
   // --- Full-text search ----------------------------------------------------
-  // `websearch_to_tsquery` accepts natural input ("toyota avanza 2019"),
+  // Two complementary strategies, OR-ed together:
+  //
+  //   tsvector / GIN   stemming, word order, multi-word queries
+  //                    ("avanza 2019 jakarta"). Needs whole lexemes.
+  //   pg_trgm / GIN    partial words and typos, which full-text search cannot
+  //                    match because it operates on complete lexemes. Two
+  //                    different trigram features are used because they solve
+  //                    different problems:
+  //                      ILIKE '%q%'  -> substring ("avan" finds "Avanza")
+  //                      make % q     -> similarity ("Toyata" finds "Toyota")
+  //
+  // `websearch_to_tsquery` accepts natural input ("toyota avanza -diesel"),
   // tolerates quotes and dashes, and never raises a syntax error on odd input -
   // unlike `to_tsquery`, which would turn a stray character into a 500.
+  //
+  // The trigram branches can be switched off with `?fuzzy=false` for callers
+  // that want strict lexical matching.
   let queryParamIndex = null;
   if (input.q) {
     queryParamIndex = params.length + 1;
     params.push(input.q);
-    conditions.push(`${alias}.search_vector @@ websearch_to_tsquery('simple', $${queryParamIndex})`);
+    const q = `$${queryParamIndex}`;
+
+    const branches = [`${alias}.search_vector @@ websearch_to_tsquery('simple', ${q})`];
+
+    if (input.fuzzy !== false) {
+      // Reusing the same placeholder keeps the query parameterised.
+      branches.push(
+        `${alias}.title ILIKE '%' || ${q} || '%'`,
+        `${alias}.make ILIKE '%' || ${q} || '%'`,
+        `${alias}.model ILIKE '%' || ${q} || '%'`,
+      );
+
+      // Trigram similarity is only meaningful for a single token. Applied to a
+      // multi-word query it compares the phrase against a one-word column, and
+      // the shared trigrams of a short make name ("Toyota" vs "toyota innova")
+      // are enough to clear the 0.3 threshold - which would match every Toyota
+      // and quietly destroy the precision of multi-word search.
+      const isSingleToken = !/\s/.test(input.q.trim());
+      if (isSingleToken && input.q.trim().length >= 4) {
+        // `%` is pg_trgm's similarity operator, backed by the same GIN index.
+        // It is what makes a typo like "Toyata" still find "Toyota".
+        branches.push(`${alias}.make % ${q}`, `${alias}.model % ${q}`);
+      }
+    }
+
+    conditions.push(`(${branches.join(' OR ')})`);
   }
 
   // --- Category scope ------------------------------------------------------

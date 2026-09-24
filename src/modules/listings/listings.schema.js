@@ -142,6 +142,10 @@ const attrFilterValue = z.union([attrRange, z.string().max(200), z.number(), z.b
 const browseQuery = z.object({
   q: z.string().trim().min(1).max(200).optional(),
 
+  // When true (the default) the text query also matches partial words and typos
+  // through pg_trgm, in addition to the full-text tsvector match.
+  fuzzy: boolQuery.default(true),
+
   // Category scope. `includeSubcategories` defaults to true so browsing "Cars"
   // naturally includes "Cars > SUV".
   categoryId: uuid.optional(),

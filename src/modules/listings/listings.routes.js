@@ -7,8 +7,15 @@ const repository = require('./listings.repository');
 const { createSchema, updateSchema, idSchema, browseSchema } = require('./listings.schema');
 const { validate } = require('../../middleware/validate');
 const { authenticate, optionalAuth, requireOwnership } = require('../../middleware/auth');
+const searchRoutes = require('../search/search.routes');
 
 const router = express.Router();
+
+// Mounted before `/:id` on purpose: Express matches in registration order, so a
+// literal `/search` segment must be registered first or it would be captured as
+// an id. Keeping it here (rather than in routes/index.js) means the ordering
+// cannot be broken from the outside.
+router.use('/search', searchRoutes);
 
 /**
  * Only the listing's owner (or an admin) may mutate it.
