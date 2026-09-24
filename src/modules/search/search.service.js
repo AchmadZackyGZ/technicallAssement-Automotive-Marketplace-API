@@ -17,6 +17,7 @@
 const logger = require('../../utils/logger');
 const { browseListings, resolveCategoryScope } = require('../listings/listings.service');
 const filtersService = require('../filters/filters.service');
+const repository = require('./search.repository');
 
 /**
  * Full-text search with faceted counts.
@@ -52,4 +53,33 @@ async function searchListings(input) {
   return result;
 }
 
-module.exports = { searchListings };
+/**
+ * Autocomplete for make, model and city.
+ *
+ * Values come from the data, so every suggestion is guaranteed to match at least
+ * one listing, and each carries its count for the UI to display. Matching and
+ * ranking are explained in search.repository.js.
+ *
+ * @param {object} input Validated suggest query
+ * @returns {Promise<{ query: string, suggestions: object, total: number }>}
+ */
+async function suggest(input) {
+  const term = input.q.trim();
+  const types = input.types ?? ['make', 'model', 'city'];
+
+  const categoryIds = await resolveCategoryScope(input);
+
+  const suggestions = await repository.suggest(term, {
+    types,
+    categoryIds,
+    limit: input.limit,
+  });
+
+  const total = Object.values(suggestions).reduce((sum, group) => sum + group.length, 0);
+
+  logger.debug('Suggestions generated', { term, types, total });
+
+  return { query: term, suggestions, total };
+}
+
+module.exports = { searchListings, suggest };

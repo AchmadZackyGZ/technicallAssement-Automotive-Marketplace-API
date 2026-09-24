@@ -3,7 +3,7 @@
 const express = require('express');
 
 const controller = require('./search.controller');
-const { searchSchema } = require('./search.schema');
+const { searchSchema, suggestSchema } = require('./search.schema');
 const { validate } = require('../../middleware/validate');
 
 const router = express.Router();
@@ -91,5 +91,79 @@ const router = express.Router();
  *       422: { $ref: '#/components/responses/ValidationError' }
  */
 router.get('/', validate(searchSchema), controller.search);
+
+/**
+ * @openapi
+ * /listings/search/suggest:
+ *   get:
+ *     tags: [Search]
+ *     summary: Autocomplete suggestions for make, model and city
+ *     description: |
+ *       Suggestions are derived from the listings themselves, not a static
+ *       dictionary, so every value is guaranteed to match at least one listing
+ *       and each carries its listing count for the UI to display.
+ *
+ *       Three strategies are combined, because they fail in different ways:
+ *
+ *       - `ILIKE '%term%'` substring - what users expect while typing. Backed by
+ *         the pg_trgm GIN indexes, so it stays fast.
+ *       - `ILIKE 'term%'` prefix - used for **ranking** only, so "Toy" puts
+ *         "Toyota" ahead of a mid-string match.
+ *       - `column % term` trigram similarity - absorbs typos ("Toyata").
+ *
+ *       Ranking is prefix match, then popularity, then alphabetical, which keeps
+ *       ordering stable when counts tie.
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema: { type: string, example: toy }
+ *       - in: query
+ *         name: types
+ *         schema: { type: string, default: 'make,model,city' }
+ *         description: Comma-separated subset of make, model, city
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 8, maximum: 25 }
+ *         description: Maximum suggestions per group
+ *       - { in: query, name: categoryId, schema: { type: string, format: uuid } }
+ *       - { in: query, name: includeSubcategories, schema: { type: boolean, default: true } }
+ *     responses:
+ *       200:
+ *         description: Grouped suggestions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     query: { type: string, example: toy }
+ *                     make:
+ *                       type: array
+ *                       items: { $ref: '#/components/schemas/Suggestion' }
+ *                     model:
+ *                       type: array
+ *                       items: { $ref: '#/components/schemas/Suggestion' }
+ *                     city:
+ *                       type: array
+ *                       items: { $ref: '#/components/schemas/Suggestion' }
+ *                 meta:
+ *                   type: object
+ *                   properties:
+ *                     total: { type: integer, example: 12 }
+ *             example:
+ *               data:
+ *                 query: toy
+ *                 make:
+ *                   - { value: Toyota, listingCount: 87, prefixMatch: true }
+ *                 model:
+ *                   - { value: Toyoace, listingCount: 2, prefixMatch: true }
+ *                 city: []
+ *               meta: { total: 2 }
+ *       422: { $ref: '#/components/responses/ValidationError' }
+ */
+router.get('/suggest', validate(suggestSchema), controller.suggest);
 
 module.exports = router;

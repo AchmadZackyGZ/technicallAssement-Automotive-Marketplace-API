@@ -301,4 +301,94 @@ describe('Search API', () => {
     const response = await harness.api(baseUrl, 'GET', `/api/v1/listings/search?q=${'x'.repeat(300)}`);
     assert.equal(response.status, 422);
   });
+
+  // -------------------------------------------------------------------------
+  // Autocomplete
+  // -------------------------------------------------------------------------
+
+  describe('autocomplete', () => {
+    const suggest = (params) =>
+      harness.api(baseUrl, 'GET', `/api/v1/listings/search/suggest?${params}`);
+
+    it('suggests a make by prefix', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await suggest(`q=toy&categoryId=${ctx.category.id}`);
+      assert.equal(response.status, 200, JSON.stringify(response.body));
+
+      const makes = response.body.data.make;
+      assert.equal(makes.length, 1);
+      assert.equal(makes[0].value, 'Toyota');
+      assert.equal(makes[0].prefixMatch, true);
+      assert.ok(makes[0].listingCount >= 2);
+    });
+
+    it('suggests models as well as makes', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await suggest(`q=avan&categoryId=${ctx.category.id}`);
+      const models = response.body.data.model.map((item) => item.value);
+      assert.ok(models.includes('Avanza'), `expected Avanza in ${JSON.stringify(models)}`);
+    });
+
+    it('suggests cities', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await suggest(`q=jak&categoryId=${ctx.category.id}`);
+      const cities = response.body.data.city.map((item) => item.value);
+      assert.deepEqual(cities, ['Jakarta']);
+    });
+
+    it('absorbs a typo via trigram similarity', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await suggest(`q=Toyata&categoryId=${ctx.category.id}`);
+      const makes = response.body.data.make.map((item) => item.value);
+      assert.ok(makes.includes('Toyota'), `expected Toyota in ${JSON.stringify(makes)}`);
+    });
+
+    it('ranks prefix matches ahead of mid-string matches', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      // "an" appears mid-string in many values; a prefix match must win.
+      const response = await suggest(`q=toyota&categoryId=${ctx.category.id}`);
+      const makes = response.body.data.make;
+      assert.equal(makes[0].prefixMatch, true);
+    });
+
+    it('limits which groups are returned', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await suggest(`q=t&types=make&categoryId=${ctx.category.id}`);
+      assert.ok(response.body.data.make);
+      assert.equal(response.body.data.model, undefined);
+      assert.equal(response.body.data.city, undefined);
+    });
+
+    it('caps the number of suggestions per group', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await suggest(`q=a&limit=1&categoryId=${ctx.category.id}`);
+      assert.ok(response.body.data.make.length <= 1);
+      assert.ok(response.body.data.model.length <= 1);
+    });
+
+    it('requires a search term', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await suggest('q=');
+      assert.equal(response.status, 422);
+      assert.equal(response.body.error.code, 'VALIDATION_ERROR');
+    });
+
+    it('scopes suggestions to the requested category', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      // Scoped to the fixture category, "honda" is only present via Mobilio;
+      // a city that exists elsewhere in the database must not appear.
+      const scoped = await suggest(`q=den&categoryId=${ctx.category.id}`);
+      const cities = scoped.body.data.city.map((item) => item.value);
+      assert.deepEqual(cities, ['Denpasar']);
+    });
+  });
 });

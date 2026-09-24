@@ -24,4 +24,14 @@ const search = asyncHandler(async (req, res) => {
   res.json(body);
 });
 
-module.exports = { search };
+/** GET /listings/search/suggest */
+const suggest = asyncHandler(async (req, res) => {
+  const { query, suggestions, total } = await service.suggest(req.query);
+
+  res.json({
+    data: { query, ...suggestions },
+    meta: { total },
+  });
+});
+
+module.exports = { search, suggest };
