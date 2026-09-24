@@ -19,6 +19,7 @@ const morgan = require('morgan');
 
 const config = require('./config');
 const routes = require('./routes');
+const { health } = require('./routes/health');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
 
@@ -82,6 +83,10 @@ function createApp() {
       apiPrefix: config.apiPrefix,
     });
   });
+
+  // Hosting platforms probe the root path; API clients use the versioned alias
+  // registered in routes/index.js. Same handler, two entry points.
+  app.get('/health', health);
 
   // --- Feature routes ------------------------------------------------------
   app.use(config.apiPrefix, routes);

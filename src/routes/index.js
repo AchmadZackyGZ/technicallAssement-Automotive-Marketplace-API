@@ -4,35 +4,29 @@
  * API route registry.
  *
  * Every feature module exposes an Express router; this file is the single place
- * that decides what is mounted and under which path. Mount order matters:
- * `/listings/search` must be registered before `/listings/:id`, otherwise the
- * `:id` parameter would swallow the literal `search` segment.
+ * that decides what is mounted and under which path.
+ *
+ * Mount order matters. `/listings/search` must be registered before
+ * `/listings/:id`, otherwise the `:id` parameter would swallow the literal
+ * `search` segment. That ordering is enforced inside the listings router itself
+ * so it cannot be broken by reordering this file.
  */
 
 const express = require('express');
 
+const { health } = require('./health');
 const authRoutes = require('../modules/auth/auth.routes');
 const categoryRoutes = require('../modules/categories/categories.routes');
+const listingRoutes = require('../modules/listings/listings.routes');
 
 const router = express.Router();
 
-/** Liveness/readiness probe - deliberately unversioned and unauthenticated. */
-router.get('/health', async (_req, res) => {
-  const db = require('../utils/db');
-  const redis = require('../utils/redis');
-
-  const [database, cache] = await Promise.all([db.healthCheck(), redis.healthCheck()]);
-  const healthy = database.ok;
-
-  res.status(healthy ? 200 : 503).json({
-    status: healthy ? 'ok' : 'degraded',
-    uptimeSeconds: Math.round(process.uptime()),
-    checks: { database, cache },
-  });
-});
+// Versioned health probe; the unversioned alias is mounted in app.js.
+router.get('/health', health);
 
 // --- Feature routers -------------------------------------------------------
 router.use('/auth', authRoutes);
 router.use('/categories', categoryRoutes);
+router.use('/listings', listingRoutes);
 
 module.exports = router;

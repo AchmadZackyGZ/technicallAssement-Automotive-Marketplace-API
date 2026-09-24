@@ -4,15 +4,16 @@ const config = require('./config');
 const logger = require('./utils/logger');
 const db = require('./utils/db');
 const redis = require('./utils/redis');
+const createApp = require('./app');
 
 /**
  * Process entry point.
  *
  * Responsibilities are deliberately narrow: boot the HTTP server, wire up
- * graceful shutdown, and refuse to start if the database is unreachable.
+ * graceful shutdown, and release resources on the way out.
  */
 
-const app = require('./app');
+const app = createApp();
 
 const server = app.listen(config.port, () => {
   logger.info('HTTP server listening', {
