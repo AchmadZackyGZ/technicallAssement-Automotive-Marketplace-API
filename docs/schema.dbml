@@ -1,0 +1,256 @@
+// ===========================================================================
+// Automotive Marketplace API - schema diagram
+//
+// Paste this file into https://dbdiagram.io (Database > Import > DBML) to render
+// the ERD that accompanies this submission.
+//
+// It mirrors src/db/migrations/*.up.sql exactly. The inline notes explain the
+// two design decisions the assessment asks about: the category tree strategy and
+// the indexing strategy.
+// ===========================================================================
+
+Project AutomotiveMarketplace {
+  database_type: 'PostgreSQL'
+  Note: '''
+  # Automotive Marketplace API
+
+  ## Category tree strategy - Adjacency List + Materialized Path
+
+  `categories` carries BOTH a `parent_id` (adjacency list) and a `path`
+  (materialized path, e.g. `/<root-uuid>/<child-uuid>/<self-uuid>/`).
+
+  * The adjacency list keeps writes trivial and the model readable.
+  * The materialized path turns "give me this category and every descendant"
+    into a single indexed prefix scan - `WHERE path LIKE '/<id>/%'` - instead of
+    a recursive CTE. That query sits on the hottest path in the API
+    (`GET /categories/:id/listings`) and the requirement is arbitrary depth, so
+    a recursive walk per request was not acceptable.
+  * `path` is backed by a `text_pattern_ops` btree index, which is what makes
+    the `LIKE 'prefix%'` scan index-usable under a non-C collation.
+  * `depth` is denormalised from the path so depth-based filtering never parses
+    the path at query time.
+  * A BEFORE INSERT trigger derives `path`/`depth`, so the invariant cannot be
+    violated by any writer, including raw SQL. Reparenting rewrites the subtree
+    with one set-based UPDATE (`categories_rebuild_subtree_paths`).
+
+  ## Dynamic, category-specific filters
+
+  `filter_definitions` is a registry, not a schema: a row says "category X
+  exposes filter `engine_cc` of type `range`, sourced from column `engine_cc`".
+
+  * `source = 'column'`    -> value lives on `listings` (fast, indexable, facet-friendly)
+  * `source = 'attribute'` -> value lives in `listing_attributes` (EAV), for sparse
+                             category-specific data such as battery capacity
+
+  Categories inherit their ancestors' definitions, so "Cars > SUV" exposes
+  everything declared on "Cars" without duplicating rows. This is how "fuel type
+  appears under Cars but not Motorcycles" is expressed as data rather than code.
+
+  ## Indexing strategy
+
+  * Keyset pagination drives the index shape: every browse query is
+    `status = ... ORDER BY created_at DESC, id DESC`, so indexes lead with the
+    equality column and carry the sort columns in matching order
+    (`listings_status_created_idx`, `listings_category_status_created_idx`).
+  * `id` is always the tie-breaker column so paging is stable when many rows
+    share a `created_at` (guaranteed by the bulk seed).
+  * Full-text search uses a generated, weighted `tsvector` with a GIN index.
+  * Autocomplete uses pg_trgm GIN indexes on make / model / city so
+    `ILIKE '%toyo%'` and `similarity()` do not degrade to sequential scans.
+  * EAV values use *partial* indexes per type (text / numeric / boolean) so only
+    the populated column is indexed.
+  '''
+}
+
+// ---------------------------------------------------------------------------
+// Core entities
+// ---------------------------------------------------------------------------
+
+Table users {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  email         varchar(255) [not null, note: 'Unique, case-insensitive (functional unique index on LOWER(email))']
+  password_hash varchar(255) [not null, note: 'bcrypt hash']
+  name          varchar(120) [not null]
+  phone         varchar(30)
+  role          varchar(20)  [not null, default: 'seller', note: 'buyer | seller | admin']
+  is_active     boolean      [not null, default: true]
+  created_at    timestamptz  [not null, default: `now()`]
+  updated_at    timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    (lower(email)) [unique, name: 'users_email_lower_unique_idx']
+    role
+    created_at
+  }
+}
+
+Table categories {
+  id          uuid         [pk, default: `gen_random_uuid()`]
+  name        varchar(100) [not null]
+  slug        varchar(140) [not null, note: 'Unique among siblings (partial unique indexes)']
+  parent_id   uuid         [ref: > categories.id, note: 'Adjacency list. ON DELETE CASCADE']
+  path        text         [not null, note: 'Materialized path: /root/child/self/ - derived by trigger']
+  depth       smallint     [not null, default: 0, note: 'Denormalised from path; roots = 0']
+  description text
+  icon        varchar(60)
+  sort_order  integer      [not null, default: 0]
+  is_active   boolean      [not null, default: true]
+  created_at  timestamptz  [not null, default: `now()`]
+  updated_at  timestamptz  [not null, default: `now()`]
+
+  Indexes {
+    path [name: 'categories_path_prefix_idx', note: 'text_pattern_ops - makes LIKE prefix% index-usable']
+    parent_id
+    depth
+    (parent_id, sort_order, name)
+    name [name: 'categories_name_trgm_idx', type: gin, note: 'pg_trgm']
+  }
+}
+
+Table listings {
+  id                uuid          [pk, default: `gen_random_uuid()`]
+  seller_id         uuid          [not null, ref: > users.id, note: 'ON DELETE CASCADE']
+  category_id       uuid          [not null, ref: > categories.id, note: 'ON DELETE RESTRICT']
+  title             varchar(200)  [not null]
+  description       text
+  make              varchar(80)   [not null]
+  model             varchar(80)   [not null]
+  year              smallint      [not null, note: 'CHECK 1900..2100']
+  mileage_km        integer       [not null, default: 0]
+  condition         varchar(20)   [not null, default: 'used', note: 'new | used | certified']
+  transmission      varchar(20)   [note: 'manual | automatic | cvt']
+  fuel_type         varchar(20)   [note: 'gasoline | diesel | electric | hybrid']
+  color             varchar(40)
+  price             numeric(14,2) [not null]
+  currency          char(3)       [not null, default: 'IDR']
+  status            varchar(20)   [not null, default: 'available', note: 'available | sold | pending | removed']
+  is_featured       boolean       [not null, default: false]
+  location_city     varchar(80)
+  location_province varchar(80)
+  view_count        integer       [not null, default: 0]
+  published_at      timestamptz   [not null, default: `now()`]
+  created_at        timestamptz   [not null, default: `now()`]
+  updated_at        timestamptz   [not null, default: `now()`]
+  deleted_at        timestamptz   [note: 'Audit trail; `status` is the visibility source of truth']
+  search_vector     tsvector      [note: 'GENERATED ALWAYS ... STORED, weighted A/B/C']
+
+  Indexes {
+    search_vector [name: 'listings_search_vector_idx', type: gin]
+    (status, created_at, id) [name: 'listings_status_created_idx']
+    (status, price, id) [name: 'listings_status_price_idx']
+    (category_id, status, created_at, id) [name: 'listings_category_status_created_idx']
+    (seller_id, created_at) [name: 'listings_seller_created_idx']
+    make
+    model
+    year
+    price
+    mileage_km
+    fuel_type
+    transmission
+    condition
+    location_city
+    make [name: 'listings_make_trgm_idx', type: gin]
+    model [name: 'listings_model_trgm_idx', type: gin]
+    location_city [name: 'listings_city_trgm_idx', type: gin]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Listing children
+// ---------------------------------------------------------------------------
+
+Table listing_images {
+  id         uuid        [pk, default: `gen_random_uuid()`]
+  listing_id uuid        [not null, ref: > listings.id, note: 'ON DELETE CASCADE']
+  url        text        [not null]
+  alt_text   varchar(200)
+  position   smallint    [not null, default: 0]
+  is_primary boolean     [not null, default: false, note: 'At most one per listing (partial unique index)']
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (listing_id, position)
+    listing_id [unique, name: 'listing_images_one_primary_idx', note: 'WHERE is_primary']
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic filter architecture
+// ---------------------------------------------------------------------------
+
+Table filter_definitions {
+  id            uuid          [pk, default: `gen_random_uuid()`]
+  category_id   uuid          [not null, ref: > categories.id, note: 'ON DELETE CASCADE - where the filter is declared']
+  key           varchar(60)   [not null, note: 'Unique per category, e.g. engine_cc']
+  label         varchar(100)  [not null]
+  type          varchar(20)   [not null, note: 'enum | range | boolean']
+  source        varchar(20)   [not null, default: 'column', note: 'column | attribute']
+  column_name   varchar(60)   [note: 'Required when source = column']
+  unit          varchar(20)   [note: 'cc, km, kWh ...']
+  options       jsonb         [note: 'Enum options: [{value,label}]']
+  min_value     numeric(14,2) [note: 'Range lower bound']
+  max_value     numeric(14,2) [note: 'Range upper bound']
+  is_filterable boolean       [not null, default: true]
+  is_facetable  boolean       [not null, default: true]
+  sort_order    integer       [not null, default: 0]
+  created_at    timestamptz   [not null, default: `now()`]
+  updated_at    timestamptz   [not null, default: `now()`]
+
+  Indexes {
+    (category_id, key) [unique]
+    (category_id, sort_order)
+    options [type: gin]
+  }
+}
+
+Table listing_attributes {
+  listing_id    uuid        [not null, ref: > listings.id]
+  definition_id uuid        [not null, ref: > filter_definitions.id]
+  value_text    text        [note: 'Exactly one of the three value columns is populated']
+  value_num     numeric(14,2)
+  value_bool    boolean
+  created_at    timestamptz [not null, default: `now()`]
+  updated_at    timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (listing_id, definition_id) [pk]
+    (definition_id, value_text) [name: 'listing_attributes_text_idx', note: 'WHERE value_text IS NOT NULL']
+    (definition_id, value_num)  [name: 'listing_attributes_num_idx', note: 'WHERE value_num IS NOT NULL']
+    (definition_id, value_bool) [name: 'listing_attributes_bool_idx', note: 'WHERE value_bool IS NOT NULL']
+    listing_id
+  }
+}
+
+Table favorites {
+  user_id    uuid        [not null, ref: > users.id]
+  listing_id uuid        [not null, ref: > listings.id]
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (user_id, listing_id) [pk]
+    listing_id
+    (user_id, created_at)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper view: filters a category exposes (own + inherited from ancestors)
+// ---------------------------------------------------------------------------
+Table category_effective_filters [note: 'VIEW - joins categories on path prefix to resolve inherited filter definitions'] {
+  category_id         uuid
+  category_slug       varchar
+  definition_id       uuid
+  key                 varchar
+  label               varchar
+  type                varchar
+  source              varchar
+  column_name         varchar
+  unit                varchar
+  options             jsonb
+  min_value           numeric
+  max_value           numeric
+  is_filterable       boolean
+  is_facetable        boolean
+  sort_order          integer
+  is_own_definition   boolean
+}
