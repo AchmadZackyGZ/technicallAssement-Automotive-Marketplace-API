@@ -71,7 +71,7 @@ npm start          # plain node
 Then open <http://localhost:3000/api/v1/docs>.
 
 ```bash
-npm test           # 80 tests; integration tests skip themselves without a database
+npm test           # 89 tests; integration tests skip themselves without a database
 npm run lint       # eslint
 npm run docs:export # regenerate docs/openapi.json
 ```
@@ -443,7 +443,7 @@ faceted search must never do.
 npm test
 ```
 
-**80 tests, all passing.** `node:test` only — no test framework to install.
+**89 tests, all passing.** `node:test` only — no test framework to install.
 
 - `tests/api.test.js` — boots the real Express app on an ephemeral port and drives
   it over HTTP against PostgreSQL: auth, the category tree (including moves and
@@ -456,11 +456,13 @@ npm test
   is disabled or throws, invalidation fan-out.
 - `tests/pagination.test.js` — cursor encode/decode, keyset direction, limit
   clamping, page assembly.
+- `tests/config.test.js` — loads the config in child processes to check the
+  production guards, boolean/integer parsing and fallbacks.
 
 Integration tests **skip themselves** when no database is reachable, so `npm test`
 is useful on a fresh clone before `npm run migrate`.
 
-Two bugs were found by actually running things rather than by reading code:
+Three bugs were found by actually running things rather than by reading code:
 
 1. `server.js` called `app.listen()` on the app *factory* — the process crashed on
    boot. Caught the first time the service was started against a real database.
@@ -468,6 +470,11 @@ Two bugs were found by actually running things rather than by reading code:
    normalises the `SCAN` cursor to a **number**, so `while (cursor !== '0')`
    compared `0 !== '0'` and never terminated. The unit tests could not have caught
    this — it needed a real Redis-speaking server.
+3. `envInt`/`envBool` read `env(name)` without forwarding their fallback, which
+   made **every** optional `PG*` variable mandatory in production — the app
+   refused to start on a deploy that configured only `DATABASE_URL`. Only
+   visible by booting the app with `NODE_ENV=production`; there is now a
+   regression test for it.
 
 ---
 
@@ -546,7 +553,7 @@ Being explicit about the limits of a 3-day build:
 
 | # | Deliverable | Where |
 | --- | --- | --- |
-| 1 | Repository with clear commit history (no squash) | this repo — 18 focused commits |
+| 1 | Repository with clear commit history (no squash) | this repo — 19 focused commits |
 | 2 | README: setup, env vars, architecture, schema rationale | this file |
 | 3 | API documentation with sample requests/responses | `/api/v1/docs`, [`docs/openapi.json`](docs/openapi.json) |
 | 4 | Schema diagram (dbdiagram.io) + tree/indexing rationale | [`docs/schema.dbml`](docs/schema.dbml) |
@@ -556,7 +563,7 @@ Being explicit about the limits of a 3-day build:
 | ★ | Docker + docker-compose | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) |
 | ★ | Redis caching for search | [`src/utils/cache.js`](src/utils/cache.js) |
 
-Also included: 80 tests, an ESLint config, and [`AGENTS.md`](AGENTS.md), the brief
+Also included: 89 tests, an ESLint config, and [`AGENTS.md`](AGENTS.md), the brief
 this was built against.
 
 ---
