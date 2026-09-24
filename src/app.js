@@ -16,8 +16,10 @@ const helmet = require('helmet');
 const cors = require('cors');
 const compression = require('compression');
 const morgan = require('morgan');
+const swaggerUi = require('swagger-ui-express');
 
 const config = require('./config');
+const { swaggerSpec } = require('./config/swagger');
 const routes = require('./routes');
 const { health } = require('./routes/health');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
@@ -90,6 +92,27 @@ function createApp() {
 
   // --- Feature routes ------------------------------------------------------
   app.use(config.apiPrefix, routes);
+
+  // --- API documentation ---------------------------------------------------
+  // Served from the same spec that the export script writes to
+  // docs/openapi.json, so what a reviewer reads and what Swagger renders are
+  // literally the same document.
+  app.get(`${config.apiPrefix}/openapi.json`, (_req, res) => res.json(swaggerSpec));
+
+  app.use(
+    `${config.apiPrefix}/docs`,
+    swaggerUi.serve,
+    swaggerUi.setup(swaggerSpec, {
+      customSiteTitle: 'Automotive Marketplace API - Reference',
+      swaggerOptions: {
+        persistAuthorization: true,
+        displayRequestDuration: true,
+        docExpansion: 'list',
+        filter: true,
+        tryItOutEnabled: true,
+      },
+    }),
+  );
 
   // --- Terminal handlers (must be last) ------------------------------------
   app.use(notFound);

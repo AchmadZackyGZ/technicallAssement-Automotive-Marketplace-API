@@ -1,0 +1,3058 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Automotive Marketplace API",
+    "version": "1.0.0",
+    "description": "REST API for an automotive marketplace: sellers list vehicles, buyers browse,\nfilter and search them.\n\nBuilt with Node.js, Express and PostgreSQL using raw SQL (no ORM), validated with\nZod and authenticated with JWT (HS256).\n\n## Things worth knowing before you use it\n\n**Pagination is cursor-based, not offset-based.** Every list endpoint returns a\n`nextCursor`. Pass it back as `cursor` and repeat until it is `null`. Offset\npaging would force PostgreSQL to generate and discard every skipped row, and\nwould shift results whenever a listing was inserted mid-pagination. See the\n`/listings` description for the full rationale.\n\n**Filters are data, not code.** A listing's category decides which filters apply\nto it. `GET /filters/{categoryId}` returns that set; the same keys are accepted\nby `POST /listings` under `attributes` and by the browse and search endpoints\nas `attr[key]` query parameters. Adding a filter is an INSERT into\n`filter_definitions`, not a code change.\n\n**Deletion is soft.** `DELETE /listings/{id}` sets `status` to `removed` and\nstamps `deleted_at`. The row is retained for referential integrity and audit,\nand disappears from every browse and search result.\n\n## Trying it out\n\n1. `POST /auth/login` with the seeded seller account below.\n2. Copy `data.token`, click **Authorize**, and paste it.\n3. `POST /listings` to create something, then `GET /listings` to browse.\n\nSeeded credentials (from `npm run seed`):\n| Role | Email | Password |\n| ---- | ----- | -------- |\n| Admin | admin@automotive.test | Admin12345 |\n| Seller | seller1@automotive.test | Seller12345 |\n| Buyer | buyer@automotive.test | Buyer12345 |",
+    "contact": {
+      "name": "Backend Technical Assessment submission",
+      "url": "https://github.com/"
+    },
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "Current server (versioned API prefix)"
+    },
+    {
+      "url": "http://localhost:3000/api/v1",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Registration, login and the current user."
+    },
+    {
+      "name": "Categories",
+      "description": "Hierarchical category tree and category-scoped browsing."
+    },
+    {
+      "name": "Listings",
+      "description": "Vehicle listing CRUD, browsing and soft deletion."
+    },
+    {
+      "name": "Search",
+      "description": "Full-text search, facets and autocomplete."
+    },
+    {
+      "name": "Filters",
+      "description": "Dynamic, category-specific filter options with counts."
+    },
+    {
+      "name": "System",
+      "description": "Health and service metadata."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "HS256 JWT issued by `POST /auth/login`. Send as `Authorization: Bearer <token>`."
+      }
+    },
+    "parameters": {
+      "ListingId": {
+        "in": "path",
+        "name": "id",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "description": "Listing id"
+      },
+      "CategoryId": {
+        "in": "path",
+        "name": "id",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "description": "Category id"
+      },
+      "SortParam": {
+        "in": "query",
+        "name": "sort",
+        "schema": {
+          "type": "string",
+          "default": "newest",
+          "enum": [
+            "newest",
+            "oldest",
+            "price_asc",
+            "price_desc",
+            "year_desc",
+            "year_asc",
+            "mileage_asc",
+            "mileage_desc",
+            "relevance"
+          ]
+        },
+        "description": "Sort order. `relevance` requires `q` and ranks by ts_rank; without a query it falls back to `newest`."
+      },
+      "LimitParam": {
+        "in": "query",
+        "name": "limit",
+        "schema": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 100
+        },
+        "description": "Page size"
+      },
+      "CursorParam": {
+        "in": "query",
+        "name": "cursor",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Opaque cursor from the previous response. A cursor issued for a different `sort` is rejected with 400."
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "seller1@automotive.test"
+          },
+          "name": {
+            "type": "string",
+            "example": "Budi Santoso"
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true,
+            "example": "+6281234567890"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "buyer",
+              "seller",
+              "admin"
+            ]
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AuthResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "user": {
+                "$ref": "#/components/schemas/User"
+              },
+              "token": {
+                "type": "string"
+              },
+              "tokenType": {
+                "type": "string",
+                "example": "Bearer"
+              },
+              "expiresIn": {
+                "type": "string",
+                "example": "7d"
+              }
+            }
+          }
+        }
+      },
+      "Category": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "SUV"
+          },
+          "slug": {
+            "type": "string",
+            "example": "suv"
+          },
+          "parentId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "path": {
+            "type": "string",
+            "description": "Materialized path of ancestor ids, self included",
+            "example": "/a1b2.../c3d4.../e5f6.../"
+          },
+          "depth": {
+            "type": "integer",
+            "example": 2
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "icon": {
+            "type": "string",
+            "nullable": true
+          },
+          "sortOrder": {
+            "type": "integer"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "listingCount": {
+            "type": "integer",
+            "description": "Listings directly attached"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CategoryDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Category"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Category"
+                }
+              },
+              "effectiveFilters": {
+                "type": "array",
+                "description": "Filter definitions this category exposes, own plus inherited",
+                "items": {
+                  "$ref": "#/components/schemas/FilterDefinition"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ListingImage": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "altText": {
+            "type": "string",
+            "nullable": true
+          },
+          "position": {
+            "type": "integer"
+          },
+          "isPrimary": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ListingAttribute": {
+        "type": "object",
+        "description": "A category-specific attribute, resolved through the filter registry",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "engine_cc"
+          },
+          "label": {
+            "type": "string",
+            "example": "Engine Displacement"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "enum",
+              "range",
+              "boolean"
+            ]
+          },
+          "unit": {
+            "type": "string",
+            "nullable": true,
+            "example": "cc"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "column",
+              "attribute"
+            ]
+          },
+          "value": {
+            "description": "String, number or boolean depending on `type`",
+            "example": 1500
+          }
+        }
+      },
+      "Listing": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sellerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "categoryId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "example": "2019 Toyota Avanza G AT"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "make": {
+            "type": "string",
+            "example": "Toyota"
+          },
+          "model": {
+            "type": "string",
+            "example": "Avanza"
+          },
+          "year": {
+            "type": "integer",
+            "example": 2019
+          },
+          "mileageKm": {
+            "type": "integer",
+            "example": 62000
+          },
+          "condition": {
+            "type": "string",
+            "enum": [
+              "new",
+              "used",
+              "certified"
+            ]
+          },
+          "transmission": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "automatic",
+              "cvt"
+            ]
+          },
+          "fuelType": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "gasoline",
+              "diesel",
+              "electric",
+              "hybrid"
+            ]
+          },
+          "color": {
+            "type": "string",
+            "nullable": true,
+            "example": "Silver"
+          },
+          "price": {
+            "type": "number",
+            "example": 185000000,
+            "description": "Amount in `currency`"
+          },
+          "currency": {
+            "type": "string",
+            "example": "IDR"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "sold",
+              "pending",
+              "removed"
+            ]
+          },
+          "isFeatured": {
+            "type": "boolean"
+          },
+          "locationCity": {
+            "type": "string",
+            "nullable": true,
+            "example": "Jakarta"
+          },
+          "locationProvince": {
+            "type": "string",
+            "nullable": true,
+            "example": "DKI Jakarta"
+          },
+          "viewCount": {
+            "type": "integer"
+          },
+          "primaryImageUrl": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "publishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "ListingDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Listing"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "slug": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "depth": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "seller": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "phone": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "role": {
+                    "type": "string"
+                  }
+                }
+              },
+              "images": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ListingImage"
+                }
+              },
+              "attributes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ListingAttribute"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Pagination": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "example": 20
+          },
+          "count": {
+            "type": "integer",
+            "example": 20
+          },
+          "hasMore": {
+            "type": "boolean",
+            "example": true
+          },
+          "sort": {
+            "type": "string",
+            "example": "newest"
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass as `cursor` to fetch the next page. `null` on the last page."
+          }
+        }
+      },
+      "FilterDefinition": {
+        "type": "object",
+        "description": "A filter declared for a category. Inherited by descendants, so \"Cars > SUV\" exposes everything declared on \"Cars\".",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "categoryId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key": {
+            "type": "string",
+            "example": "engine_cc"
+          },
+          "label": {
+            "type": "string",
+            "example": "Engine Displacement"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "enum",
+              "range",
+              "boolean"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "column",
+              "attribute"
+            ],
+            "description": "`column` reads a first-class listings column; `attribute` reads the EAV table."
+          },
+          "columnName": {
+            "type": "string",
+            "nullable": true,
+            "example": "fuel_type"
+          },
+          "unit": {
+            "type": "string",
+            "nullable": true,
+            "example": "cc"
+          },
+          "options": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "minValue": {
+            "type": "number",
+            "nullable": true
+          },
+          "maxValue": {
+            "type": "number",
+            "nullable": true
+          },
+          "isFilterable": {
+            "type": "boolean"
+          },
+          "isFacetable": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "integer"
+          }
+        }
+      },
+      "FacetValue": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "description": "The filter value to send back"
+          },
+          "label": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "example": 148
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Present for the category facet"
+          },
+          "name": {
+            "type": "string",
+            "description": "Present for the category facet"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Present for the category facet"
+          }
+        }
+      },
+      "FacetGroup": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "make"
+          },
+          "label": {
+            "type": "string",
+            "example": "Make"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "enum",
+              "range",
+              "boolean"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "column",
+              "attribute"
+            ]
+          },
+          "unit": {
+            "type": "string",
+            "nullable": true
+          },
+          "min": {
+            "type": "number",
+            "nullable": true,
+            "description": "Range facets only"
+          },
+          "max": {
+            "type": "number",
+            "nullable": true,
+            "description": "Range facets only"
+          },
+          "count": {
+            "type": "integer",
+            "description": "Range facets only"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FacetValue"
+            }
+          }
+        }
+      },
+      "RangeFacet": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "price"
+          },
+          "label": {
+            "type": "string",
+            "example": "Price"
+          },
+          "type": {
+            "type": "string",
+            "example": "range"
+          },
+          "unit": {
+            "type": "string",
+            "nullable": true,
+            "example": "IDR"
+          },
+          "min": {
+            "type": "number",
+            "nullable": true,
+            "example": 6200000
+          },
+          "max": {
+            "type": "number",
+            "nullable": true,
+            "example": 1989000000
+          },
+          "total": {
+            "type": "integer",
+            "example": 612
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "example": "under_100m"
+                },
+                "label": {
+                  "type": "string",
+                  "example": "Under Rp 100 jt"
+                },
+                "min": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "max": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "count": {
+                  "type": "integer",
+                  "example": 84
+                }
+              }
+            }
+          }
+        }
+      },
+      "Facets": {
+        "type": "object",
+        "description": "Facet counts for the whole matching set. Each group is computed with its own filter removed (disjunctive), so switching values stays possible.",
+        "properties": {
+          "totalMatching": {
+            "type": "integer",
+            "example": 612
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FacetGroup"
+            }
+          },
+          "ranges": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RangeFacet"
+            }
+          }
+        }
+      },
+      "Suggestion": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "example": "Toyota"
+          },
+          "listingCount": {
+            "type": "integer",
+            "example": 87
+          },
+          "prefixMatch": {
+            "type": "boolean",
+            "description": "True when the value starts with the search term"
+          }
+        }
+      },
+      "HealthStatus": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "example": "ok"
+          },
+          "uptimeSeconds": {
+            "type": "integer",
+            "example": 3612
+          },
+          "checks": {
+            "type": "object",
+            "properties": {
+              "database": {
+                "type": "object",
+                "properties": {
+                  "ok": {
+                    "type": "boolean",
+                    "example": true
+                  },
+                  "latencyMs": {
+                    "type": "integer",
+                    "example": 1
+                  },
+                  "error": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "ok": {
+                    "type": "boolean",
+                    "example": true
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "example": true
+                  },
+                  "error": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "NOT_FOUND"
+              },
+              "message": {
+                "type": "string",
+                "example": "Listing not found"
+              },
+              "details": {
+                "description": "Present for validation failures: one entry per offending field",
+                "nullable": true
+              },
+              "requestId": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed request - for example a cursor issued for a different sort order",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, malformed or expired bearer token",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated, but not allowed to perform this action",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The resource does not exist (or was soft-deleted)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The resource already exists, or a foreign key would be violated",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Request body or query failed validation. `error.details` lists each field.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "One or more filter attributes are invalid",
+                "details": [
+                  {
+                    "field": "attributes.engine_cc",
+                    "message": "Must be between 50 and 10000 cc",
+                    "code": "out_of_range"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Rate limit exceeded",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/listings/search": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Full-text and faceted search with combined filters",
+        "description": "Accepts the same filters, sorting and cursor pagination as GET /listings,\nand adds facet counts on top.\n\n**How matching works.** Two complementary index strategies are OR-ed:\n\n- a weighted `tsvector` (title/make/model ranked `A`, location and\n  colour `B`, description `C`) queried with `websearch_to_tsquery`, which\n  understands quoted phrases and `-exclusions` and never errors on odd\n  input. This handles stemming and word order.\n- `pg_trgm` branches over title, make and model: `ILIKE '%q%'` for\n  substrings (\"avan\" finds \"Avanza\") and the `%` similarity operator for\n  typos (\"Toyata\" finds \"Toyota\"). Full-text search cannot do either,\n  because it operates on whole lexemes. The similarity branches are\n  applied to single-token queries only - against a multi-word phrase they\n  would compare a phrase to a one-word column and match far too broadly.\n\nDisable the trigram branches with `fuzzy=false` for strict matching.\n\n**Facets** are computed from the same filter object with the cursor\nremoved, so counts describe the whole matching set and do not shift as\nyou page.\n",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Search text, e.g. \"toyota avanza 2019\""
+          },
+          {
+            "in": "query",
+            "name": "fuzzy",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "in": "query",
+            "name": "facets",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "in": "query",
+            "name": "facetKeys",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated facet groups to compute, e.g. make,city"
+          },
+          {
+            "in": "query",
+            "name": "categoryId",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeSubcategories",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "in": "query",
+            "name": "make",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "condition",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "transmission",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fuelType",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "city",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMin",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMax",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMin",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMax",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "attr[engine_cc][min]",
+            "in": "query",
+            "schema": {
+              "type": "number"
+            },
+            "description": "Dynamic range filter, keyed by a filter definition of the category."
+          },
+          {
+            "$ref": "#/components/parameters/SortParam"
+          },
+          {
+            "$ref": "#/components/parameters/LimitParam"
+          },
+          {
+            "$ref": "#/components/parameters/CursorParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching listings plus facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Listing"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "query": {
+                          "type": "string",
+                          "nullable": true,
+                          "example": "avanza"
+                        }
+                      }
+                    },
+                    "facets": {
+                      "$ref": "#/components/schemas/Facets"
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "8f14e45f-ceea-467a-9c1c-1a2b3c4d5e6f",
+                      "title": "2019 Toyota Avanza 1.5 G",
+                      "make": "Toyota",
+                      "model": "Avanza",
+                      "year": 2019,
+                      "price": 185000000,
+                      "locationCity": "Jakarta"
+                    }
+                  ],
+                  "pagination": {
+                    "limit": 20,
+                    "count": 1,
+                    "hasMore": false,
+                    "sort": "newest",
+                    "nextCursor": null
+                  },
+                  "meta": {
+                    "query": "avanza"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/listings/search/suggest": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Autocomplete suggestions for make, model and city",
+        "description": "Suggestions are derived from the listings themselves, not a static\ndictionary, so every value is guaranteed to match at least one listing\nand each carries its listing count for the UI to display.\n\nThree strategies are combined, because they fail in different ways:\n\n- `ILIKE '%term%'` substring - what users expect while typing. Backed by\n  the pg_trgm GIN indexes, so it stays fast.\n- `ILIKE 'term%'` prefix - used for **ranking** only, so \"Toy\" puts\n  \"Toyota\" ahead of a mid-string match.\n- `column % term` trigram similarity - absorbs typos (\"Toyata\").\n\nRanking is prefix match, then popularity, then alphabetical, which keeps\nordering stable when counts tie.\n",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "toy"
+            }
+          },
+          {
+            "in": "query",
+            "name": "types",
+            "schema": {
+              "type": "string",
+              "default": "make,model,city"
+            },
+            "description": "Comma-separated subset of make, model, city"
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "default": 8,
+              "maximum": 25
+            },
+            "description": "Maximum suggestions per group"
+          },
+          {
+            "in": "query",
+            "name": "categoryId",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeSubcategories",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grouped suggestions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "query": {
+                          "type": "string",
+                          "example": "toy"
+                        },
+                        "make": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Suggestion"
+                          }
+                        },
+                        "model": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Suggestion"
+                          }
+                        },
+                        "city": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Suggestion"
+                          }
+                        }
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "example": 12
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "query": "toy",
+                    "make": [
+                      {
+                        "value": "Toyota",
+                        "listingCount": 87,
+                        "prefixMatch": true
+                      }
+                    ],
+                    "model": [
+                      {
+                        "value": "Toyoace",
+                        "listingCount": 2,
+                        "prefixMatch": true
+                      }
+                    ],
+                    "city": []
+                  },
+                  "meta": {
+                    "total": 2
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/listings": {
+      "post": {
+        "tags": [
+          "Listings"
+        ],
+        "summary": "Create a new vehicle listing",
+        "description": "The authenticated user becomes the seller. `attributes` accepts any key\ndeclared as a filter definition for the chosen category - for example\n`engine_cc` under Cars, or `battery_capacity_kwh` under Electric.\nValues are validated against the definition's declared type, and a\ncolumn-backed definition is routed to its column transparently.\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "categoryId",
+                  "title",
+                  "make",
+                  "model",
+                  "year",
+                  "price"
+                ],
+                "properties": {
+                  "categoryId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "title": {
+                    "type": "string",
+                    "example": "2019 Toyota Avanza 1.5 G - Full Service Record"
+                  },
+                  "description": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "make": {
+                    "type": "string",
+                    "example": "Toyota"
+                  },
+                  "model": {
+                    "type": "string",
+                    "example": "Avanza"
+                  },
+                  "year": {
+                    "type": "integer",
+                    "example": 2019
+                  },
+                  "mileageKm": {
+                    "type": "integer",
+                    "example": 62000,
+                    "default": 0
+                  },
+                  "price": {
+                    "type": "number",
+                    "example": 185000000
+                  },
+                  "condition": {
+                    "type": "string",
+                    "enum": [
+                      "new",
+                      "used",
+                      "certified"
+                    ],
+                    "default": "used"
+                  },
+                  "transmission": {
+                    "type": "string",
+                    "enum": [
+                      "manual",
+                      "automatic",
+                      "cvt"
+                    ],
+                    "nullable": true
+                  },
+                  "fuelType": {
+                    "type": "string",
+                    "enum": [
+                      "gasoline",
+                      "diesel",
+                      "electric",
+                      "hybrid"
+                    ],
+                    "nullable": true
+                  },
+                  "color": {
+                    "type": "string",
+                    "nullable": true,
+                    "example": "Silver"
+                  },
+                  "locationCity": {
+                    "type": "string",
+                    "nullable": true,
+                    "example": "Jakarta"
+                  },
+                  "locationProvince": {
+                    "type": "string",
+                    "nullable": true,
+                    "example": "DKI Jakarta"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "available",
+                      "sold",
+                      "pending"
+                    ],
+                    "default": "available"
+                  },
+                  "images": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "url"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "altText": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "position": {
+                          "type": "integer"
+                        },
+                        "isPrimary": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  "attributes": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "example": {
+                      "engine_cc": 1500,
+                      "seat_count": 7,
+                      "drive_type": "FWD",
+                      "has_sunroof": false
+                    }
+                  }
+                }
+              },
+              "examples": {
+                "car": {
+                  "summary": "A car listing with dynamic attributes",
+                  "value": {
+                    "categoryId": "3f1c9d2e-0000-4000-8000-000000000000",
+                    "title": "2019 Toyota Avanza 1.5 G",
+                    "make": "Toyota",
+                    "model": "Avanza",
+                    "year": 2019,
+                    "mileageKm": 62000,
+                    "price": 185000000,
+                    "condition": "used",
+                    "transmission": "automatic",
+                    "fuelType": "gasoline",
+                    "color": "Silver",
+                    "locationCity": "Jakarta",
+                    "locationProvince": "DKI Jakarta",
+                    "images": [
+                      {
+                        "url": "https://images.example.com/avanza-1.jpg",
+                        "isPrimary": true
+                      }
+                    ],
+                    "attributes": {
+                      "engine_cc": 1500,
+                      "seat_count": 7,
+                      "drive_type": "FWD"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Listing created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ListingDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Listings"
+        ],
+        "summary": "Browse listings with filters, sorting and cursor pagination",
+        "description": "Keyset (cursor) pagination, not offset pagination. Follow `nextCursor`\nuntil it is `null`.\n\nOffset paging would force PostgreSQL to generate and discard every\nskipped row, and would shift results whenever a listing is inserted\nmid-pagination. A cursor encodes the position `(sortColumn, id)` and is\nanswered by a composite index, so page 50 costs the same as page 1.\n\n`id` is always the tie-breaker, so rows sharing a `created_at` cannot be\nduplicated or skipped across pages.\n\nDynamic attributes are filtered with `attr[key]=value` or\n`attr[key][min]=` / `attr[key][max]=`.\n",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Full-text query"
+          },
+          {
+            "in": "query",
+            "name": "categoryId",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "categorySlug",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Alternative to categoryId"
+          },
+          {
+            "in": "query",
+            "name": "includeSubcategories",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "in": "query",
+            "name": "make",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated, exact values - see /filters for canonical values"
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "condition",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "new",
+                "used",
+                "certified"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "transmission",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "manual",
+                "automatic",
+                "cvt"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "fuelType",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "gasoline",
+                "diesel",
+                "electric",
+                "hybrid"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "color",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "city",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "province",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMin",
+            "schema": {
+              "type": "integer",
+              "example": 2018
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMax",
+            "schema": {
+              "type": "integer",
+              "example": 2024
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMin",
+            "schema": {
+              "type": "number",
+              "example": 100000000
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMax",
+            "schema": {
+              "type": "number",
+              "example": 500000000
+            }
+          },
+          {
+            "in": "query",
+            "name": "mileageMax",
+            "schema": {
+              "type": "integer",
+              "example": 100000
+            }
+          },
+          {
+            "in": "query",
+            "name": "sellerId",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "isFeatured",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string",
+              "description": "Defaults to every status except \"removed\""
+            }
+          },
+          {
+            "name": "attr[engine_cc][min]",
+            "in": "query",
+            "schema": {
+              "type": "number"
+            },
+            "description": "Dynamic range filter. The key must be a filter definition of the category."
+          },
+          {
+            "name": "attr[drive_type]",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Dynamic enum/boolean filter."
+          },
+          {
+            "$ref": "#/components/parameters/SortParam"
+          },
+          {
+            "$ref": "#/components/parameters/LimitParam"
+          },
+          {
+            "$ref": "#/components/parameters/CursorParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of listings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Listing"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "8f14e45f-ceea-467a-9c1c-1a2b3c4d5e6f",
+                      "title": "2019 Toyota Avanza 1.5 G",
+                      "make": "Toyota",
+                      "model": "Avanza",
+                      "year": 2019,
+                      "mileageKm": 62000,
+                      "price": 185000000,
+                      "currency": "IDR",
+                      "condition": "used",
+                      "transmission": "automatic",
+                      "fuelType": "gasoline",
+                      "color": "Silver",
+                      "status": "available",
+                      "locationCity": "Jakarta",
+                      "primaryImageUrl": "https://images.example.com/avanza-1.jpg"
+                    }
+                  ],
+                  "pagination": {
+                    "limit": 20,
+                    "count": 1,
+                    "hasMore": false,
+                    "sort": "newest",
+                    "nextCursor": null
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/listings/{id}": {
+      "get": {
+        "tags": [
+          "Listings"
+        ],
+        "summary": "Get a single listing",
+        "description": "Returns the listing with its seller, category, image gallery and dynamic\nattributes. Increments `viewCount` as a side effect. Soft-deleted\nlistings are only visible to an admin.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ListingId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Listing detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ListingDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Listings"
+        ],
+        "summary": "Update a listing",
+        "description": "Partial update - only the supplied fields change. Only the owner (or an\nadmin) may call this. Changing `categoryId` clears the attributes that\nbelonged to the previous category. Supplying `images` replaces the whole\ngallery.\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ListingId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "categoryId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "make": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "year": {
+                    "type": "integer"
+                  },
+                  "mileageKm": {
+                    "type": "integer"
+                  },
+                  "price": {
+                    "type": "number"
+                  },
+                  "condition": {
+                    "type": "string",
+                    "enum": [
+                      "new",
+                      "used",
+                      "certified"
+                    ]
+                  },
+                  "transmission": {
+                    "type": "string",
+                    "enum": [
+                      "manual",
+                      "automatic",
+                      "cvt"
+                    ],
+                    "nullable": true
+                  },
+                  "fuelType": {
+                    "type": "string",
+                    "enum": [
+                      "gasoline",
+                      "diesel",
+                      "electric",
+                      "hybrid"
+                    ],
+                    "nullable": true
+                  },
+                  "color": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "locationCity": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "locationProvince": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "available",
+                      "sold",
+                      "pending",
+                      "removed"
+                    ]
+                  },
+                  "isFeatured": {
+                    "type": "boolean"
+                  },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "attributes": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ListingDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Listings"
+        ],
+        "summary": "Soft-delete a listing",
+        "description": "Sets `status` to `removed` and stamps `deleted_at`. The row is retained\nfor referential integrity and audit, and disappears from all browse and\nsearch results.\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ListingId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Listing soft-deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Listing"
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "softDeleted": {
+                          "type": "boolean",
+                          "example": true
+                        },
+                        "alreadyRemoved": {
+                          "type": "boolean",
+                          "example": false
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/filters": {
+      "get": {
+        "tags": [
+          "Filters"
+        ],
+        "summary": "All available filter options with counts (facets)",
+        "description": "Returns the filter options a client can offer, with counts.\n\n**Disjunctive facets.** Each facet's counts are computed with that\nfacet's own filter removed and every other filter still applied. After\nfiltering to `make=Toyota` the make facet still lists Honda with its\ncount, so the user can switch; the city facet only counts cities within\nToyota.\n\nCounts are produced from the same WHERE fragment as search results, so a\nfacet can never disagree with the result set it describes.\n\nThe same query parameters as GET /listings are accepted, so a client can\nask \"what are the available options *given* my current filters?\".\n",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "categoryId",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeSubcategories",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "make",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "city",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMin",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMax",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMin",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMax",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "valueLimit",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            },
+            "description": "Max values per categorical facet"
+          },
+          {
+            "in": "query",
+            "name": "facetKeys",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated groups to compute, e.g. make,city"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Filter options and facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "scope": {
+                          "type": "object",
+                          "properties": {
+                            "categoryId": {
+                              "type": "string",
+                              "nullable": true
+                            },
+                            "includeSubcategories": {
+                              "type": "boolean"
+                            }
+                          }
+                        },
+                        "definitions": {
+                          "type": "array",
+                          "description": "Filter registry entries (declared + inherited)",
+                          "items": {
+                            "$ref": "#/components/schemas/FilterDefinition"
+                          }
+                        },
+                        "facets": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/FacetGroup"
+                          }
+                        },
+                        "ranges": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "$ref": "#/components/schemas/RangeFacet"
+                          }
+                        },
+                        "totalMatching": {
+                          "type": "integer",
+                          "example": 612
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "scope": {
+                      "categoryId": null,
+                      "includeSubcategories": true
+                    },
+                    "definitions": [],
+                    "facets": [
+                      {
+                        "key": "make",
+                        "label": "Make",
+                        "type": "enum",
+                        "values": [
+                          {
+                            "value": "Toyota",
+                            "count": 148
+                          },
+                          {
+                            "value": "Honda",
+                            "count": 96
+                          }
+                        ]
+                      },
+                      {
+                        "key": "city",
+                        "label": "City",
+                        "type": "enum",
+                        "values": [
+                          {
+                            "value": "Jakarta",
+                            "count": 210
+                          }
+                        ]
+                      }
+                    ],
+                    "ranges": {
+                      "price": {
+                        "key": "price",
+                        "label": "Price",
+                        "type": "range",
+                        "unit": "IDR",
+                        "min": 50000000,
+                        "max": 2000000000,
+                        "total": 612,
+                        "buckets": [
+                          {
+                            "key": "under_100m",
+                            "label": "Under Rp 100 jt",
+                            "min": 0,
+                            "max": 100000000,
+                            "count": 84
+                          }
+                        ]
+                      }
+                    },
+                    "totalMatching": 612
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/filters/{categoryId}": {
+      "get": {
+        "tags": [
+          "Filters"
+        ],
+        "summary": "Filter attributes specific to a category",
+        "description": "Returns the filters a category exposes, including those **inherited from\nits ancestors**. Inheritance is resolved by a path-prefix join in the\n`category_effective_filters` view, so \"Cars > SUV\" automatically offers\nevery filter declared on \"Cars\" without duplicating rows.\n\nThis is the endpoint that makes \"fuel type appears under Cars but not\nMotorcycles\" visible as data: the definitions are simply not inherited\nbetween siblings.\n\nFacet counts are scoped to the category subtree and are disjunctive, as\non GET /filters.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CategoryId"
+          },
+          {
+            "in": "query",
+            "name": "includeSubcategories",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "in": "query",
+            "name": "valueLimit",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          },
+          {
+            "in": "query",
+            "name": "facetKeys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Category-scoped filter options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "scope": {
+                          "type": "object"
+                        },
+                        "definitions": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/FilterDefinition"
+                          }
+                        },
+                        "facets": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/FacetGroup"
+                          }
+                        },
+                        "ranges": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "$ref": "#/components/schemas/RangeFacet"
+                          }
+                        },
+                        "totalMatching": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "meta": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "scope": {
+                      "categoryId": "6b1f3a2c-0000-4000-8000-000000000000",
+                      "includeSubcategories": true
+                    },
+                    "definitions": [
+                      {
+                        "key": "fuel_type",
+                        "label": "Fuel Type",
+                        "type": "enum",
+                        "source": "column",
+                        "options": [
+                          {
+                            "value": "gasoline",
+                            "label": "Gasoline"
+                          },
+                          {
+                            "value": "diesel",
+                            "label": "Diesel"
+                          }
+                        ]
+                      },
+                      {
+                        "key": "engine_cc",
+                        "label": "Engine Displacement",
+                        "type": "range",
+                        "source": "attribute",
+                        "unit": "cc",
+                        "minValue": 50,
+                        "maxValue": 10000
+                      }
+                    ],
+                    "facets": [],
+                    "ranges": {},
+                    "totalMatching": 120
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/categories": {
+      "get": {
+        "tags": [
+          "Categories"
+        ],
+        "summary": "Get the full category tree",
+        "description": "Returns the whole taxonomy. The response is nested (`children`) by\ndefault; pass `flat=true` for a materialized-path-ordered list.\n\nBacked by the adjacency-list + materialized-path design: the flat list is\nordered by `path`, so assembling the tree needs no recursive query.\n",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "flat",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Return a flat list instead of a nested tree"
+          },
+          {
+            "in": "query",
+            "name": "maxDepth",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20
+            },
+            "description": "Only include nodes at or above this depth"
+          },
+          {
+            "in": "query",
+            "name": "includeInactive",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Category tree",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Category"
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "type": "integer",
+                          "example": 15
+                        },
+                        "flat": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Categories"
+        ],
+        "summary": "Create a category node",
+        "description": "Requires an authenticated user with the `admin` role.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "SUV"
+                  },
+                  "slug": {
+                    "type": "string",
+                    "example": "suv",
+                    "description": "Optional - derived from name when omitted"
+                  },
+                  "parentId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
+                  },
+                  "description": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "icon": {
+                    "type": "string",
+                    "nullable": true,
+                    "example": "car"
+                  },
+                  "sortOrder": {
+                    "type": "integer",
+                    "default": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Category created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Category"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/categories/{id}/listings": {
+      "get": {
+        "tags": [
+          "Categories"
+        ],
+        "summary": "Browse listings scoped to a category and its subcategories",
+        "description": "Accepts the same filters, sorting and cursor pagination as GET /listings,\nwith the category pinned. `includeSubcategories` defaults to true, which\nis answered by the materialized path: the subtree is resolved to a list\nof ids in one prefix scan, then filtered with `category_id = ANY(...)` -\nno recursive CTE per request.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CategoryId"
+          },
+          {
+            "in": "query",
+            "name": "includeSubcategories",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "make",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMin",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "yearMax",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMin",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priceMax",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/SortParam"
+          },
+          {
+            "$ref": "#/components/parameters/LimitParam"
+          },
+          {
+            "$ref": "#/components/parameters/CursorParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of listings in scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Listing"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Pagination"
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "category": {
+                          "$ref": "#/components/schemas/Category"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/categories/{id}": {
+      "get": {
+        "tags": [
+          "Categories"
+        ],
+        "summary": "Get a single category with its direct children",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CategoryId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Category detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Category"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "children": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/Category"
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Categories"
+        ],
+        "summary": "Update a category",
+        "description": "Requires the `admin` role. Supplying `parentId` moves the node: the whole\nsubtree is rewritten in one transaction and moving a node into its own\ndescendant is rejected with a 400.\n",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CategoryId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "slug": {
+                    "type": "string"
+                  },
+                  "parentId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true,
+                    "description": "Move the node (and its subtree) under this parent"
+                  },
+                  "description": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "icon": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "sortOrder": {
+                    "type": "integer"
+                  },
+                  "isActive": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated category",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Category"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Register a new account",
+        "description": "Creates a buyer or seller account and returns a JWT (HS256) that can be\nused as a `Bearer` token on protected endpoints.\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password",
+                  "name"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "seller@example.com"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "example": "Rahasia123"
+                  },
+                  "name": {
+                    "type": "string",
+                    "example": "Budi Santoso"
+                  },
+                  "phone": {
+                    "type": "string",
+                    "example": "+628123456789"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "buyer",
+                      "seller"
+                    ],
+                    "default": "seller"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user": {
+                          "$ref": "#/components/schemas/User"
+                        },
+                        "token": {
+                          "type": "string"
+                        },
+                        "tokenType": {
+                          "type": "string",
+                          "example": "Bearer"
+                        },
+                        "expiresIn": {
+                          "type": "string",
+                          "example": "7d"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Log in with email and password",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "seller@example.com"
+                  },
+                  "password": {
+                    "type": "string",
+                    "example": "Rahasia123"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user": {
+                          "$ref": "#/components/schemas/User"
+                        },
+                        "token": {
+                          "type": "string"
+                        },
+                        "tokenType": {
+                          "type": "string",
+                          "example": "Bearer"
+                        },
+                        "expiresIn": {
+                          "type": "string",
+                          "example": "7d"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get the authenticated user's profile",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Update the authenticated user's profile",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "Budi Santoso"
+                  },
+                  "phone": {
+                    "type": "string",
+                    "nullable": true,
+                    "example": "+628123456789"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Liveness and readiness probe",
+        "description": "Reports 200 when PostgreSQL is reachable and 503 when it is not - the\nservice is useless without its database. Redis is reported but never\nfails the probe, because the API is designed to run without a cache.\n\nAlso served at `/health` without the version prefix, since hosting\nplatforms probe the root path.\n",
+        "responses": {
+          "200": {
+            "description": "Healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Degraded - the database is unreachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
