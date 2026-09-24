@@ -4,7 +4,7 @@ const express = require('express');
 
 const controller = require('./listings.controller');
 const repository = require('./listings.repository');
-const { createSchema, updateSchema, idSchema } = require('./listings.schema');
+const { createSchema, updateSchema, idSchema, browseSchema } = require('./listings.schema');
 const { validate } = require('../../middleware/validate');
 const { authenticate, optionalAuth, requireOwnership } = require('../../middleware/auth');
 
@@ -107,6 +107,99 @@ const mustOwnListing = requireOwnership((req) => repository.findOwnerId(req.para
  *       422: { $ref: '#/components/responses/ValidationError' }
  */
 router.post('/', authenticate, validate(createSchema), controller.create);
+
+/**
+ * @openapi
+ * /listings:
+ *   get:
+ *     tags: [Listings]
+ *     summary: Browse listings with filters, sorting and cursor pagination
+ *     description: |
+ *       Keyset (cursor) pagination, not offset pagination. Follow `nextCursor`
+ *       until it is `null`.
+ *
+ *       Offset paging would force PostgreSQL to generate and discard every
+ *       skipped row, and would shift results whenever a listing is inserted
+ *       mid-pagination. A cursor encodes the position `(sortColumn, id)` and is
+ *       answered by a composite index, so page 50 costs the same as page 1.
+ *
+ *       `id` is always the tie-breaker, so rows sharing a `created_at` cannot be
+ *       duplicated or skipped across pages.
+ *
+ *       Dynamic attributes are filtered with `attr[key]=value` or
+ *       `attr[key][min]=` / `attr[key][max]=`.
+ *     parameters:
+ *       - { in: query, name: q, schema: { type: string }, description: 'Full-text query' }
+ *       - { in: query, name: categoryId, schema: { type: string, format: uuid } }
+ *       - { in: query, name: categorySlug, schema: { type: string }, description: 'Alternative to categoryId' }
+ *       - { in: query, name: includeSubcategories, schema: { type: boolean, default: true } }
+ *       - { in: query, name: make, schema: { type: string }, description: 'Comma-separated, exact values - see /filters for canonical values' }
+ *       - { in: query, name: model, schema: { type: string } }
+ *       - { in: query, name: condition, schema: { type: string, enum: [new, used, certified] } }
+ *       - { in: query, name: transmission, schema: { type: string, enum: [manual, automatic, cvt] } }
+ *       - { in: query, name: fuelType, schema: { type: string, enum: [gasoline, diesel, electric, hybrid] } }
+ *       - { in: query, name: color, schema: { type: string } }
+ *       - { in: query, name: city, schema: { type: string } }
+ *       - { in: query, name: province, schema: { type: string } }
+ *       - { in: query, name: yearMin, schema: { type: integer, example: 2018 } }
+ *       - { in: query, name: yearMax, schema: { type: integer, example: 2024 } }
+ *       - { in: query, name: priceMin, schema: { type: number, example: 100000000 } }
+ *       - { in: query, name: priceMax, schema: { type: number, example: 500000000 } }
+ *       - { in: query, name: mileageMax, schema: { type: integer, example: 100000 } }
+ *       - { in: query, name: sellerId, schema: { type: string, format: uuid } }
+ *       - { in: query, name: isFeatured, schema: { type: boolean } }
+ *       - { in: query, name: status, schema: { type: string, description: 'Defaults to every status except "removed"' } }
+ *       - name: attr[engine_cc][min]
+ *         in: query
+ *         schema: { type: number }
+ *         description: Dynamic range filter. The key must be a filter definition of the category.
+ *       - name: attr[drive_type]
+ *         in: query
+ *         schema: { type: string }
+ *         description: Dynamic enum/boolean filter.
+ *       - $ref: '#/components/parameters/SortParam'
+ *       - $ref: '#/components/parameters/LimitParam'
+ *       - $ref: '#/components/parameters/CursorParam'
+ *     responses:
+ *       200:
+ *         description: A page of listings
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: array
+ *                   items: { $ref: '#/components/schemas/Listing' }
+ *                 pagination: { $ref: '#/components/schemas/Pagination' }
+ *             example:
+ *               data:
+ *                 - id: 8f14e45f-ceea-467a-9c1c-1a2b3c4d5e6f
+ *                   title: 2019 Toyota Avanza 1.5 G
+ *                   make: Toyota
+ *                   model: Avanza
+ *                   year: 2019
+ *                   mileageKm: 62000
+ *                   price: 185000000
+ *                   currency: IDR
+ *                   condition: used
+ *                   transmission: automatic
+ *                   fuelType: gasoline
+ *                   color: Silver
+ *                   status: available
+ *                   locationCity: Jakarta
+ *                   primaryImageUrl: https://images.example.com/avanza-1.jpg
+ *               pagination:
+ *                 limit: 20
+ *                 count: 1
+ *                 hasMore: false
+ *                 sort: newest
+ *                 nextCursor: null
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ *       422: { $ref: '#/components/responses/ValidationError' }
+ */
+router.get('/', validate(browseSchema), controller.browse);
 
 /**
  * @openapi

@@ -8,6 +8,7 @@
  */
 
 const db = require('../../utils/db');
+const { buildListingQuery } = require('./listings.query');
 
 /**
  * Canonical projection. Every read goes through this so the JSON shape is
@@ -382,6 +383,53 @@ async function incrementViewCount(id) {
   await db.query('UPDATE listings SET view_count = view_count + 1 WHERE id = $1', [id]);
 }
 
+/**
+ * Browse/search listings with filters, sorting and keyset pagination.
+ *
+ * Fetches `limit + 1` rows so the caller can detect a further page without a
+ * second COUNT query. `primaryImageUrl` is resolved with an index-backed
+ * correlated subquery, which keeps the list response useful for a gallery UI
+ * without an N+1 round trip.
+ *
+ * @param {object} options
+ * @param {object} options.input        Validated filter input
+ * @param {?string[]} options.categoryIds Pre-resolved category scope
+ * @param {?object} options.cursor      Decoded cursor payload
+ * @param {number} options.limit
+ * @returns {Promise<{ rows: object[], sortKey: string }>}
+ */
+async function browse({ input, categoryIds = null, cursor = null, limit }) {
+  const { conditions, params, orderBy, keysetExpression, sortKey } = buildListingQuery(input, {
+    alias: 'l',
+    cursor,
+    categoryIds,
+  });
+
+  const where = conditions.length ? `WHERE ${conditions.join('\n         AND ')}` : '';
+
+  // Relevance sorting needs the computed rank in the projection so the cursor
+  // can carry it forward to the next page.
+  const rankProjection = sortKey === 'relevance' ? `, ${keysetExpression} AS rank` : '';
+
+  params.push(limit + 1);
+
+  const { rows } = await db.query(
+    `SELECT ${LISTING_COLUMNS}${rankProjection},
+            (SELECT li.url
+               FROM listing_images li
+              WHERE li.listing_id = l.id
+              ORDER BY li.is_primary DESC, li.position ASC
+              LIMIT 1) AS "primaryImageUrl"
+       FROM listings l
+       ${where}
+      ORDER BY ${orderBy}
+      LIMIT $${params.length}`,
+    params,
+  );
+
+  return { rows: rows.map(mapListing), sortKey };
+}
+
 async function countAll() {
   const { rows } = await db.query('SELECT COUNT(*)::int AS total FROM listings');
   return rows[0].total;
@@ -395,6 +443,7 @@ module.exports = {
   mapListing,
   createWithRelations,
   updateWithRelations,
+  browse,
   findById,
   findByIdWithDetails,
   findOwnerId,

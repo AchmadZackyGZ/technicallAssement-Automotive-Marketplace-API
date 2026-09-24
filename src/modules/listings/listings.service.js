@@ -15,6 +15,7 @@
 
 const logger = require('../../utils/logger');
 const { NotFoundError, BadRequestError, ValidationError } = require('../../utils/errors');
+const { decodeCursor, normaliseLimit, buildPage } = require('../../utils/pagination');
 const categoriesRepository = require('../categories/categories.repository');
 const filtersRepository = require('../filters/filters.repository');
 const repository = require('./listings.repository');
@@ -297,11 +298,91 @@ async function deleteListing(id) {
   return { alreadyRemoved: false, listing: listing ?? existing };
 }
 
+/**
+ * Resolve the category scope for a browse/search request.
+ *
+ * When a category is named, `includeSubcategories` (default true) expands it to
+ * the whole subtree via the materialized path, so browsing "Cars" naturally
+ * returns "Cars > SUV" listings too.
+ *
+ * @returns {Promise<?string[]>} category ids, or null when unscoped
+ */
+async function resolveCategoryScope({ categoryId, categorySlug, includeSubcategories = true }) {
+  if (!categoryId && !categorySlug) return null;
+
+  const category = categoryId
+    ? await categoriesRepository.findById(categoryId)
+    : await categoriesRepository.findBySlug(categorySlug);
+
+  if (!category) throw new NotFoundError('Category');
+
+  return includeSubcategories ? categoriesRepository.findSubtreeIds(category.id) : [category.id];
+}
+
+/**
+ * Browse listings: structured filters, sorting and cursor pagination.
+ *
+ * @param {object} input Validated browse query
+ * @returns {Promise<{ items: object[], pagination: object }>}
+ */
+async function browseListings(input) {
+  const categoryIds = await resolveCategoryScope(input);
+
+  // `relevance` needs a full-text query to rank against; without one, fall back
+  // to the default ordering rather than returning an arbitrary order.
+  const sort = input.sort === 'relevance' && !input.q ? 'newest' : input.sort;
+
+  const cursor = decodeCursor(input.cursor, sort);
+  const limit = normaliseLimit(input.limit);
+
+  const { rows, sortKey } = await repository.browse({
+    input: { ...input, sort },
+    categoryIds,
+    cursor,
+    limit,
+  });
+
+  const page = buildPage(rows, limit, sortKey);
+
+  return {
+    items: page.items.map(stripInternalFields),
+    pagination: page.pagination,
+  };
+}
+
+/**
+ * Listings scoped to a category and its subcategories - the
+ * `GET /categories/:id/listings` endpoint. It is browse with the category
+ * pinned, so both endpoints share one code path.
+ */
+async function browseCategoryListings(categoryId, input) {
+  const category = await categoriesRepository.findById(categoryId);
+  if (!category) throw new NotFoundError('Category');
+
+  const result = await browseListings({
+    ...input,
+    categoryId,
+    categorySlug: undefined,
+    includeSubcategories: input.includeSubcategories ?? true,
+  });
+
+  return { ...result, category: { id: category.id, name: category.name, slug: category.slug, depth: category.depth } };
+}
+
+/** Drop fields that exist only to drive keyset pagination. */
+function stripInternalFields(row) {
+  const { rank, ...rest } = row;
+  return rest;
+}
+
 module.exports = {
   createListing,
   getListing,
   updateListing,
   deleteListing,
+  browseListings,
+  browseCategoryListings,
+  resolveCategoryScope,
   resolveAttributes,
   pickCoreFields,
 };

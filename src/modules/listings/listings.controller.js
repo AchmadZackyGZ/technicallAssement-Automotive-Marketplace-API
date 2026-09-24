@@ -13,6 +13,12 @@ const create = asyncHandler(async (req, res) => {
   res.status(201).json({ data: listing });
 });
 
+/** GET /listings */
+const browse = asyncHandler(async (req, res) => {
+  const { items, pagination } = await service.browseListings(req.query);
+  res.json({ data: items, pagination });
+});
+
 /** GET /listings/:id */
 const getOne = asyncHandler(async (req, res) => {
   // An owner or admin may still open a listing that was soft-deleted.
@@ -43,4 +49,4 @@ const remove = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { create, getOne, update, remove };
+module.exports = { create, browse, getOne, update, remove };

@@ -4,6 +4,7 @@ const express = require('express');
 
 const controller = require('./categories.controller');
 const { createSchema, updateSchema, idSchema, listSchema } = require('./categories.schema');
+const { browseQuery } = require('../listings/listings.schema');
 const { validate } = require('../../middleware/validate');
 const { authenticate, requireRole } = require('../../middleware/auth');
 
@@ -84,6 +85,55 @@ const router = express.Router();
  */
 router.get('/', validate(listSchema), controller.list);
 router.post('/', authenticate, requireRole('admin'), validate(createSchema), controller.create);
+
+/**
+ * @openapi
+ * /categories/{id}/listings:
+ *   get:
+ *     tags: [Categories]
+ *     summary: Browse listings scoped to a category and its subcategories
+ *     description: |
+ *       Accepts the same filters, sorting and cursor pagination as GET /listings,
+ *       with the category pinned. `includeSubcategories` defaults to true, which
+ *       is answered by the materialized path: the subtree is resolved to a list
+ *       of ids in one prefix scan, then filtered with `category_id = ANY(...)` -
+ *       no recursive CTE per request.
+ *     parameters:
+ *       - $ref: '#/components/parameters/CategoryId'
+ *       - { in: query, name: includeSubcategories, schema: { type: boolean, default: true } }
+ *       - { in: query, name: q, schema: { type: string } }
+ *       - { in: query, name: make, schema: { type: string } }
+ *       - { in: query, name: yearMin, schema: { type: integer } }
+ *       - { in: query, name: yearMax, schema: { type: integer } }
+ *       - { in: query, name: priceMin, schema: { type: number } }
+ *       - { in: query, name: priceMax, schema: { type: number } }
+ *       - $ref: '#/components/parameters/SortParam'
+ *       - $ref: '#/components/parameters/LimitParam'
+ *       - $ref: '#/components/parameters/CursorParam'
+ *     responses:
+ *       200:
+ *         description: A page of listings in scope
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: array
+ *                   items: { $ref: '#/components/schemas/Listing' }
+ *                 pagination: { $ref: '#/components/schemas/Pagination' }
+ *                 meta:
+ *                   type: object
+ *                   properties:
+ *                     category: { $ref: '#/components/schemas/Category' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ *       422: { $ref: '#/components/responses/ValidationError' }
+ */
+router.get(
+  '/:id/listings',
+  validate({ params: idSchema.params, query: browseQuery }),
+  controller.listListings,
+);
 
 /**
  * @openapi

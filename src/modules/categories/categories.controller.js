@@ -6,6 +6,7 @@
 
 const { asyncHandler } = require('../../utils/asyncHandler');
 const service = require('./categories.service');
+const listingsService = require('../listings/listings.service');
 
 /** GET /categories */
 const list = asyncHandler(async (req, res) => {
@@ -47,4 +48,20 @@ const update = asyncHandler(async (req, res) => {
   res.json({ data: category });
 });
 
-module.exports = { list, getOne, create, update };
+/**
+ * GET /categories/:id/listings
+ *
+ * Browse listings scoped to a category and (by default) its whole subtree.
+ * Delegates to the listings service so this endpoint and GET /listings share
+ * exactly one filter/pagination code path.
+ */
+const listListings = asyncHandler(async (req, res) => {
+  const { items, pagination, category } = await listingsService.browseCategoryListings(
+    req.params.id,
+    req.query,
+  );
+
+  res.json({ data: items, pagination, meta: { category } });
+});
+
+module.exports = { list, getOne, create, update, listListings };

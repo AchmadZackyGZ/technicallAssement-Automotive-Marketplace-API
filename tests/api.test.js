@@ -671,4 +671,245 @@ describe('Automotive Marketplace API', () => {
     assert.equal(response.status, 404);
     assert.equal(response.body.error.code, 'NOT_FOUND');
   });
+
+  // -------------------------------------------------------------------------
+  // Browse, filtering and cursor pagination
+  // -------------------------------------------------------------------------
+
+  describe('browsing and cursor pagination', () => {
+    // A dedicated category and a known set of listings, so assertions about
+    // paging and filtering do not depend on anything created earlier.
+    const suite = {};
+
+    before(async () => {
+      if (!available) return;
+
+      const suffix = harness.uniqueSuffix();
+
+      const category = await harness.api(baseUrl, 'POST', '/api/v1/categories', {
+        token: ctx.adminToken,
+        body: { name: 'Pagination Fixtures', slug: `pagination-${suffix}` },
+      });
+      suite.category = category.body.data;
+
+      const child = await harness.api(baseUrl, 'POST', '/api/v1/categories', {
+        token: ctx.adminToken,
+        body: { name: 'Nested', slug: 'nested', parentId: suite.category.id },
+      });
+      suite.child = child.body.data;
+
+      // An attribute-backed range filter, declared on the parent so the child
+      // inherits it through the materialized path.
+      await filtersRepository.createDefinition({
+        categoryId: suite.category.id,
+        key: 'engine_cc',
+        label: 'Engine Displacement',
+        type: 'range',
+        source: 'attribute',
+        unit: 'cc',
+        minValue: 50,
+        maxValue: 10000,
+        sortOrder: 1,
+      });
+
+      // Six listings with strictly increasing prices, three in the parent
+      // category and three in the child, so subtree scoping is observable.
+      const prices = [100_000_000, 200_000_000, 300_000_000, 400_000_000, 500_000_000, 600_000_000];
+      suite.ids = [];
+
+      for (let index = 0; index < prices.length; index += 1) {
+        const target = index < 3 ? suite.category.id : suite.child.id;
+        // eslint-disable-next-line no-await-in-loop -- ordering must be deterministic
+        const created = await harness.api(baseUrl, 'POST', '/api/v1/listings', {
+          token: ctx.sellerToken,
+          body: {
+            categoryId: target,
+            title: `Fixture listing number ${index} for pagination`,
+            make: index % 2 === 0 ? 'Toyota' : 'Honda',
+            model: `Model ${index}`,
+            year: 2015 + index,
+            mileageKm: 10_000 * (index + 1),
+            price: prices[index],
+            condition: 'used',
+            fuelType: 'gasoline',
+            // 1000, 1100, ... 1500 cc
+            attributes: { engine_cc: 1000 + index * 100 },
+          },
+        });
+
+        if (created.status !== 201) {
+          throw new Error(`fixture creation failed: ${JSON.stringify(created.body)}`);
+        }
+        suite.ids.push(created.body.data.id);
+      }
+    });
+
+    it('pages with a cursor without duplicating or skipping rows', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const seen = [];
+      let cursor = null;
+      let pages = 0;
+
+      do {
+        const url = `/api/v1/listings?categoryId=${suite.category.id}&limit=2${
+          cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+        }`;
+        // eslint-disable-next-line no-await-in-loop -- paging is inherently sequential
+        const response = await harness.api(baseUrl, 'GET', url);
+
+        assert.equal(response.status, 200);
+        assert.ok(response.body.data.length <= 2);
+        seen.push(...response.body.data.map((row) => row.id));
+        cursor = response.body.pagination.nextCursor;
+        pages += 1;
+
+        assert.ok(pages <= 10, 'pagination must terminate');
+      } while (cursor);
+
+      assert.equal(seen.length, 6, 'all six fixtures should be returned exactly once');
+      assert.equal(new Set(seen).size, 6, 'no row may appear on two pages');
+    });
+
+    it('includes subcategories by default and excludes them on request', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const withChildren = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&limit=100`,
+      );
+      assert.equal(withChildren.body.data.length, 6);
+
+      const withoutChildren = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&includeSubcategories=false&limit=100`,
+      );
+      assert.equal(withoutChildren.body.data.length, 3);
+    });
+
+    it('sorts by price ascending across pages', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&sort=price_asc&limit=100`,
+      );
+
+      const prices = response.body.data.map((row) => row.price);
+      const sorted = [...prices].sort((a, b) => a - b);
+      assert.deepEqual(prices, sorted);
+    });
+
+    it('filters by make, price range and year range', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const toyota = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&make=Toyota&limit=100`,
+      );
+      assert.ok(toyota.body.data.length > 0);
+      assert.ok(toyota.body.data.every((row) => row.make === 'Toyota'));
+
+      const priced = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&priceMin=250000000&priceMax=450000000&limit=100`,
+      );
+      assert.ok(priced.body.data.every((row) => row.price >= 250_000_000 && row.price <= 450_000_000));
+      assert.equal(priced.body.data.length, 2);
+
+      const year = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&yearMin=2020&limit=100`,
+      );
+      assert.ok(year.body.data.every((row) => row.year >= 2020));
+    });
+
+    it('filters on a dynamic range attribute', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      // Fixtures carry engine_cc of 1000..1500. Asking for >= 1200 must return
+      // exactly the three listings created with 1200, 1300 and 1400 ... plus 1500.
+      const response = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&limit=100&attr%5Bengine_cc%5D%5Bmin%5D=1200`,
+      );
+
+      assert.equal(response.status, 200, JSON.stringify(response.body));
+      assert.equal(response.body.data.length, 4);
+    });
+
+    it('filters on a dynamic range attribute with an upper bound', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&limit=100&attr%5Bengine_cc%5D%5Bmax%5D=1100`,
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(response.body.data.length, 2);
+    });
+
+    it('rejects an invalid sort key with 422', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await harness.api(baseUrl, 'GET', '/api/v1/listings?sort=drop_table');
+      assert.equal(response.status, 422);
+      assert.equal(response.body.error.code, 'VALIDATION_ERROR');
+    });
+
+    it('rejects a cursor issued for a different sort order', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const first = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&sort=newest&limit=2`,
+      );
+      const cursor = first.body.pagination.nextCursor;
+      assert.ok(cursor);
+
+      const mismatched = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/listings?categoryId=${suite.category.id}&sort=price_asc&limit=2&cursor=${encodeURIComponent(cursor)}`,
+      );
+
+      assert.equal(mismatched.status, 400);
+      assert.equal(mismatched.body.error.code, 'BAD_REQUEST');
+    });
+
+    it('serves GET /categories/:id/listings with the same filters', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await harness.api(
+        baseUrl,
+        'GET',
+        `/api/v1/categories/${suite.category.id}/listings?limit=100`,
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(response.body.data.length, 6);
+      assert.equal(response.body.meta.category.id, suite.category.id);
+    });
+
+    it('404s when the category in the scope does not exist', async (t) => {
+      if (!requireDatabase(t)) return;
+
+      const response = await harness.api(
+        baseUrl,
+        'GET',
+        '/api/v1/listings?categoryId=00000000-0000-4000-8000-000000000000',
+      );
+      assert.equal(response.status, 404);
+    });
+  });
 });
