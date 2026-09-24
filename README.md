@@ -47,6 +47,13 @@ Brings up PostgreSQL, Redis and the API, waits for both dependencies to be
 healthy, runs migrations, seeds 600 listings and serves on
 <http://localhost:3000/api/v1/docs>.
 
+Podman works too — the compose file only uses standard Compose features:
+
+```bash
+podman machine start      # once, if the VM is not already running
+podman compose up --build
+```
+
 ### Option B — Local
 
 ```bash
@@ -563,8 +570,8 @@ Being explicit about the limits of a 3-day build:
 | ★ | Docker + docker-compose | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) |
 | ★ | Redis caching for search | [`src/utils/cache.js`](src/utils/cache.js) |
 
-Also included: 89 tests, an ESLint config, and [`AGENTS.md`](AGENTS.md), the brief
-this was built against.
+Also included: 89 tests, an ESLint config, a [`LICENSE`](LICENSE), and
+[`AGENTS.md`](AGENTS.md), the brief this was built against.
 
 ---
 
