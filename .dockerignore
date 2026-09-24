@@ -1,0 +1,32 @@
+# Keep the build context small and the image reproducible.
+# Anything the container does not need at runtime is excluded here.
+
+# Dependencies are installed inside the image from the lockfile.
+node_modules
+
+# Local environment and secrets - never baked into an image.
+.env
+.env.*
+!.env.example
+
+# Version control and tooling
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+.editorconfig
+
+# Tests and documentation are not needed to run the service
+tests
+docs
+coverage
+*.md
+!README.md
+
+# Local verification artefacts
+.localdb
+tmp
+logs
+*.log

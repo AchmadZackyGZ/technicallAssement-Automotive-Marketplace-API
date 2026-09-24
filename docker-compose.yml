@@ -1,0 +1,90 @@
+# ============================================================================
+# Full local stack: PostgreSQL + Redis + the API.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:3000/api/v1/docs
+#
+# The API container waits for both dependencies to report healthy before it
+# starts, applies migrations, seeds 600 listings, and serves.
+# ============================================================================
+
+name: automotive-marketplace
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: amp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PGUSER:-marketplace}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-marketplace}
+      POSTGRES_DB: ${PGDATABASE:-automotive_marketplace}
+      # Deterministic collation keeps ORDER BY results identical across machines.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    ports:
+      - '${PGPORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The API must not start until PostgreSQL is genuinely accepting queries.
+      test: ['CMD-SHELL', 'pg_isready -U ${PGUSER:-marketplace} -d ${PGDATABASE:-automotive_marketplace}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: amp-redis
+    restart: unless-stopped
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: amp-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      API_PREFIX: /api/v1
+
+      # Service DNS names from this compose network.
+      DATABASE_URL: postgres://${PGUSER:-marketplace}:${PGPASSWORD:-marketplace}@postgres:5432/${PGDATABASE:-automotive_marketplace}
+      DB_SSL: 'false'
+
+      REDIS_URL: redis://redis:6379
+      CACHE_ENABLED: 'true'
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
+
+      # Override in a real deployment. Generate with:
+      #   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+      JWT_SECRET: ${JWT_SECRET:-local-compose-secret-not-for-production}
+      JWT_EXPIRES_IN: 7d
+
+      CORS_ORIGIN: '*'
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-1000}
+
+      # Populate demo data on boot so the stack is usable immediately.
+      SEED_ON_START: ${SEED_ON_START:-true}
+      SEED_LISTINGS: ${SEED_LISTINGS:-600}
+    ports:
+      - '${PORT:-3000}:3000'
+
+volumes:
+  pgdata:
+    name: amp-pgdata
