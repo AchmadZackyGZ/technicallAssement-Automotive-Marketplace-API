@@ -10,7 +10,6 @@
  */
 
 const path = require('path');
-const config = require('./index');
 
 /** Glob patterns must use forward slashes, including on Windows. */
 const toGlob = (relative) => path.join(__dirname, '..', relative).replace(/\\/g, '/');
