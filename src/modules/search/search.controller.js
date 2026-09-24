@@ -12,7 +12,14 @@ const search = asyncHandler(async (req, res) => {
   const { items, pagination, query, facets } = await service.searchListings(req.query);
 
   const body = { data: items, pagination, meta: { query } };
-  if (facets) body.facets = facets;
+
+  if (facets) {
+    body.facets = {
+      totalMatching: facets.counts.total,
+      groups: facets.groups,
+      ranges: facets.ranges,
+    };
+  }
 
   res.json(body);
 });
