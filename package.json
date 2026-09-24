@@ -16,7 +16,7 @@
     "migrate:reset": "node src/db/migrate.js reset",
     "seed": "node src/db/seed.js",
     "db:reset": "node src/db/migrate.js reset && node src/db/seed.js",
-    "test": "node --test tests/",
+    "test": "node --test \"tests/**/*.test.js\"",
     "lint": "eslint src",
     "docs:export": "node scripts/export-openapi.js"
   },
