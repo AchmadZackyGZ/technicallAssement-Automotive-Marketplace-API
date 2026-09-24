@@ -21,7 +21,9 @@ const server = app.listen(config.port, () => {
     port: config.port,
     apiPrefix: config.apiPrefix,
     docs: `${config.apiPrefix}/docs`,
-    redis: redis.isEnabled() ? 'enabled' : 'disabled',
+    // `connecting` rather than a misleading `disabled` - the Redis client
+    // connects in the background so boot is never blocked by a slow cache.
+    redis: redis.status(),
   });
 });
 

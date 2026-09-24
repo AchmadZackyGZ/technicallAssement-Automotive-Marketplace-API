@@ -99,7 +99,12 @@ services:
       SEED_ON_START: ${SEED_ON_START:-true}
       SEED_LISTINGS: ${SEED_LISTINGS:-600}
     ports:
-      - '${PORT:-3000}:3000'
+      # Published as API_PORT, not PORT, on purpose. Compose substitutes
+      # variables from the project's .env file, so using `PORT` here would make
+      # the *host* port follow the app's own local dev setting - a developer with
+      # PORT=3100 in .env would silently get the API on 3100 while the container
+      # still listens on 3000, contradicting the README.
+      - '${API_PORT:-3000}:3000'
 
 volumes:
   pgdata:

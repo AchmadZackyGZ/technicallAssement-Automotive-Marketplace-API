@@ -46,6 +46,24 @@ If `amp-api` is missing entirely, the build failed — see below.
 If it exists but is `Exited`, read its logs; the entrypoint prints what it is
 doing before it dies.
 
+### `podman compose up` shows logs from only one service
+
+A real trap. `podman compose` on Windows delegates to an external provider —
+`podman-compose` — and that provider does not always stream every service's
+output to the terminal. The stack can be **fully up and healthy** while the
+terminal shows only PostgreSQL, whose logs then go quiet, so it looks hung.
+
+Confirm the truth with `podman ps` before concluding anything. If all services
+say `Up`, the stack is fine and you are only missing the logs:
+
+```bash
+podman ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
+podman logs -f amp-api
+```
+
+This is exactly how a working stack gets misdiagnosed as a hang. **`podman ps` is
+the source of truth, not the log stream.**
+
 ---
 
 ## `podman machine start` says "already running" but nothing works
@@ -168,12 +186,21 @@ PostgreSQL or another project already holds one, override it without editing the
 file:
 
 ```powershell
-$env:PGPORT=5433; $env:REDIS_PORT=6380; $env:PORT=3100
+$env:PGPORT=5433; $env:REDIS_PORT=6380; $env:API_PORT=3100
 podman compose up --build
 ```
 
-`PORT` only changes the published host port; the container always listens on
-3000.
+`API_PORT` only changes the published host port; the container always listens on
+3000. It is deliberately *not* called `PORT`, because Compose substitutes
+variables from the project's `.env` file — a developer with `PORT=3100` in their
+local `.env` would otherwise get the API published on 3100 while the README, and
+the container, both say 3000.
+
+If the published port does not match what you expect, check it directly:
+
+```bash
+podman ps --format '{{.Names}}\t{{.Ports}}'
+```
 
 ---
 

@@ -57,6 +57,22 @@ function isEnabled() {
   return Boolean(client) && ready;
 }
 
+/**
+ * Human-readable connection state.
+ *
+ * `isEnabled()` is deliberately strict - it answers "can I use the cache right
+ * now?". At boot that is almost always `false`, because connecting happens in the
+ * background. Logging that as "disabled" is misleading: a cache that is merely
+ * still connecting is not the same as one that was never configured, and the
+ * difference matters when reading boot logs.
+ *
+ * @returns {'disabled'|'connecting'|'ready'}
+ */
+function status() {
+  if (!client) return 'disabled';
+  return ready ? 'ready' : 'connecting';
+}
+
 function buildKey(namespace, parts) {
   return `${KEY_PREFIX}${namespace}:${parts}`;
 }
@@ -182,6 +198,7 @@ async function close() {
 
 module.exports = {
   isEnabled,
+  status,
   buildKey,
   get,
   set,
