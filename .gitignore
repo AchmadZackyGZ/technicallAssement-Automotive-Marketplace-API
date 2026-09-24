@@ -28,3 +28,6 @@ Thumbs.db
 dist/
 build/
 tmp/
+
+# Local scratch database used for verification only
+.localdb/
