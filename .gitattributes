@@ -1,0 +1,17 @@
+# Normalise line endings so the repository stays consistent across platforms.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF if any are ever added.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets are never touched.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+
+# Keep generated lockfiles out of diffs.
+package-lock.json -diff linguist-generated
