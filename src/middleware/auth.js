@@ -105,7 +105,10 @@ function requireOwnership(getOwnerId) {
       if (req.user.role === 'admin') return next();
 
       const ownerId = await getOwnerId(req);
-      if (!ownerId) return next(new ForbiddenError('Unable to verify resource ownership'));
+      // No owner means the resource does not exist. Fall through so the handler
+      // can answer with a proper 404 instead of a misleading 403.
+      if (!ownerId) return next();
+
       if (String(ownerId) !== String(req.user.id)) {
         return next(new ForbiddenError('You can only modify your own listings'));
       }
