@@ -7,6 +7,22 @@
 // It mirrors src/db/migrations/*.up.sql exactly. The inline notes explain the
 // two design decisions the assessment asks about: the category tree strategy and
 // the indexing strategy.
+//
+// TWO DBML SYNTAX RULES THIS FILE DEPENDS ON (both cost time to discover):
+//
+//   1. Index `type:` accepts only `btree` and `hash`. PostgreSQL's `gin` and
+//      `gist` are rejected with "Expected btree, comment, hash, or whitespace".
+//      GIN indexes are therefore declared normally and marked "GIN" in the
+//      index note, which keeps the ERD renderable without losing the detail.
+//
+//   2. An expression index must be wrapped in backticks - `(`lower(email)`)`.
+//      Written bare, as `(lower(email))`, the parser reports "An index field
+//      must be an identifier, a quoted identifier, a functional expression or a
+//      tuple of such".
+//
+// Note that the parser stops at the first syntax error, so fixing one reveals
+// the next. Both rules above were verified against @dbml/core 10.2.0, the same
+// parser dbdiagram.io runs.
 // ===========================================================================
 
 Project AutomotiveMarketplace {
@@ -78,7 +94,11 @@ Table users {
   updated_at    timestamptz  [not null, default: `now()`]
 
   Indexes {
-    (lower(email)) [unique, name: 'users_email_lower_unique_idx']
+    // Expression indexes must be wrapped in backticks for dbdiagram.io to parse
+    // them; a bare `(lower(email))` is rejected with
+    // "An index field must be an identifier, a quoted identifier, a functional
+    // expression or a tuple of such".
+    (`lower(email)`) [unique, name: 'users_email_lower_unique_idx']
     role
     created_at
   }
@@ -103,7 +123,7 @@ Table categories {
     parent_id
     depth
     (parent_id, sort_order, name)
-    name [name: 'categories_name_trgm_idx', type: gin, note: 'pg_trgm']
+    name [name: 'categories_name_trgm_idx', note: 'GIN · pg_trgm (fuzzy category lookup)']
   }
 }
 
@@ -135,7 +155,7 @@ Table listings {
   search_vector     tsvector      [note: 'GENERATED ALWAYS ... STORED, weighted A/B/C']
 
   Indexes {
-    search_vector [name: 'listings_search_vector_idx', type: gin]
+    search_vector [name: 'listings_search_vector_idx', note: 'GIN · full-text search over the weighted tsvector']
     (status, created_at, id) [name: 'listings_status_created_idx']
     (status, price, id) [name: 'listings_status_price_idx']
     (category_id, status, created_at, id) [name: 'listings_category_status_created_idx']
@@ -149,9 +169,9 @@ Table listings {
     transmission
     condition
     location_city
-    make [name: 'listings_make_trgm_idx', type: gin]
-    model [name: 'listings_model_trgm_idx', type: gin]
-    location_city [name: 'listings_city_trgm_idx', type: gin]
+    make [name: 'listings_make_trgm_idx', note: 'GIN · pg_trgm (autocomplete, substring, typos)']
+    model [name: 'listings_model_trgm_idx', note: 'GIN · pg_trgm (autocomplete, substring, typos)']
+    location_city [name: 'listings_city_trgm_idx', note: 'GIN · pg_trgm (autocomplete, substring, typos)']
   }
 }
 
@@ -199,7 +219,7 @@ Table filter_definitions {
   Indexes {
     (category_id, key) [unique]
     (category_id, sort_order)
-    options [type: gin]
+    options [note: 'GIN · jsonb containment queries']
   }
 }
 
