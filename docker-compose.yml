@@ -1,12 +1,13 @@
 # ============================================================================
 # Full local stack: PostgreSQL + Redis + the API.
 #
-#   docker compose up --build
+#   docker compose up --build          # Docker
+#   podman compose up --build          # Podman
 #
 # Then open http://localhost:3000/api/v1/docs
 #
-# The API container waits for both dependencies to report healthy before it
-# starts, applies migrations, seeds 600 listings, and serves.
+# The API waits for PostgreSQL to be genuinely ready, then applies migrations,
+# seeds 600 listings, and serves.
 # ============================================================================
 
 name: automotive-marketplace
@@ -38,7 +39,15 @@ services:
     image: redis:7-alpine
     container_name: amp-redis
     restart: unless-stopped
-    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    # Append-only file off: Redis here only ever holds a 60-second cache, and a
+    # container restart rebuilding it is cheaper than persisting it.
+    #
+    # Deliberately NOT `--save ""` (which also disables RDB snapshots): an empty
+    # argv element is dropped by some compose implementations, leaving `--save`
+    # to swallow the next flag and crash-loop Redis. RDB dumps still happen, but
+    # they land in the container's own writable layer, not in a named volume, so
+    # they disappear with the container.
+    command: ['redis-server', '--appendonly', 'no']
     ports:
       - '${REDIS_PORT:-6379}:6379'
     healthcheck:
@@ -46,6 +55,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 5s
 
   api:
     build:
@@ -55,9 +65,15 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        # Hard requirement: without a database there is nothing to serve.
         condition: service_healthy
       redis:
-        condition: service_healthy
+        # Soft requirement. The API is explicitly designed to run without a
+        # cache, so it waits only for Redis to be *started*, never for its
+        # healthcheck. Waiting on `service_healthy` here would let a Redis
+        # hiccup block the whole stack - the API would sit idle forever while
+        # its dependency crash-looped.
+        condition: service_started
     environment:
       NODE_ENV: production
       PORT: 3000

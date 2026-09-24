@@ -83,6 +83,11 @@ npm run lint       # eslint
 npm run docs:export # regenerate docs/openapi.json
 ```
 
+Something not starting? [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) covers
+the failures that actually happen — including why a healthy PostgreSQL container
+looks "stuck", and the Podman-on-Windows state where `machine start` claims the VM
+is running while the socket refuses connections.
+
 ---
 
 ## API
