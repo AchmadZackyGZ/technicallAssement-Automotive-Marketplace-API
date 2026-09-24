@@ -11,19 +11,26 @@ Node.js 20 · Express · PostgreSQL 16 · raw SQL (`pg`, no ORM) · Zod · JWT (
 
 ## Live API
 
-> **`https://<your-service>.up.railway.app/api/v1`** ← replace after deploying
+**Base URL:** `https://technicallassement-automotive-marketplace-api-production.up.railway.app/api/v1`
 
-Deployment is one command away — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-The Railway project needs an account and a database plugin, so the URL is left
-as a placeholder rather than fabricated. Everything else in this README was
-verified against a real PostgreSQL instance.
+Deployed on Railway and verified end to end — no local setup required. The instance
+below is live and seeded with 600 listings:
 
 | | |
 | --- | --- |
-| **Swagger UI** | `/api/v1/docs` |
-| **OpenAPI JSON** | [`docs/openapi.json`](docs/openapi.json) |
-| **Health** | `/health` |
+| **Swagger UI** | <https://technicallassement-automotive-marketplace-api-production.up.railway.app/api/v1/docs> |
+| **Health** | <https://technicallassement-automotive-marketplace-api-production.up.railway.app/health> |
+| **OpenAPI JSON** | [`docs/openapi.json`](docs/openapi.json) (also served at `/api/v1/openapi.json`) |
 | **ERD (dbdiagram.io)** | [`docs/schema.dbml`](docs/schema.dbml) — paste into <https://dbdiagram.io> |
+
+```bash
+curl https://technicallassement-automotive-marketplace-api-production.up.railway.app/health
+# {"status":"ok","checks":{"database":{"ok":true,...},"cache":{"ok":true,"enabled":true,...}}}
+```
+
+> The domain has a **double L** in `technicallassement`, matching the repository
+> name. `technicalassement…` resolves too (Railway's DNS is a wildcard) but returns
+> `404 Application not found`.
 
 ### Demo credentials (created by `npm run seed`)
 
@@ -117,8 +124,10 @@ in Swagger.
 
 ### Try it in 30 seconds
 
+Against the **live deployment** — nothing to install:
+
 ```bash
-BASE=http://localhost:3000/api/v1
+BASE=https://technicallassement-automotive-marketplace-api-production.up.railway.app/api/v1
 
 TOKEN=$(curl -s $BASE/auth/login -H 'Content-Type: application/json' \
   -d '{"email":"seller1@automotive.test","password":"Seller12345"}' \
@@ -132,6 +141,10 @@ curl -s "$BASE/listings?make=Toyota&fuelType=diesel&priceMax=600000000&limit=3" 
 # Follow the cursor to page 2
 CURSOR=$(curl -s "$BASE/listings?limit=3" | node -pe 'JSON.parse(require("fs").readFileSync(0)).pagination.nextCursor')
 curl -s "$BASE/listings?limit=3&cursor=$CURSOR" >/dev/null && echo "page 2 OK"
+```
+
+Swap `BASE` for `http://localhost:3000/api/v1` to run the same script against a
+local stack.
 
 # Which filters does Motorcycles expose? (no fuel type — see below)
 curl -s "$BASE/filters/$(curl -s "$BASE/categories?flat=true" \
@@ -474,6 +487,13 @@ npm test
 Integration tests **skip themselves** when no database is reachable, so `npm test`
 is useful on a fresh clone before `npm run migrate`.
 
+The deployed instance was verified separately, against the live URL, with 23
+checks covering every endpoint in the brief: health, the OpenAPI document, the
+category tree, cursor pagination with no overlap between pages, filters, search
+with facets, autocomplete, `X-Cache: MISS → HIT`, auth, the full listing lifecycle
+(create → read → patch → soft-delete → 404), and validation rejecting an
+out-of-range attribute with 422. All passed.
+
 Three bugs were found by actually running things rather than by reading code:
 
 1. `server.js` called `app.listen()` on the app *factory* — the process crashed on
@@ -570,7 +590,7 @@ Being explicit about the limits of a 3-day build:
 | 3 | API documentation with sample requests/responses | `/api/v1/docs`, [`docs/openapi.json`](docs/openapi.json) |
 | 4 | Schema diagram (dbdiagram.io) + tree/indexing rationale | [`docs/schema.dbml`](docs/schema.dbml) |
 | 5 | Seed script, 500+ listings | `npm run seed` — 600 listings |
-| 6 | Public deployment + live URL | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) (URL pending account) |
+| 6 | Public deployment + live URL | Railway — see [Live API](#live-api) above |
 | 7 | `.env.example` | [`.env.example`](.env.example) |
 | ★ | Docker + docker-compose | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) |
 | ★ | Redis caching for search | [`src/utils/cache.js`](src/utils/cache.js) |
