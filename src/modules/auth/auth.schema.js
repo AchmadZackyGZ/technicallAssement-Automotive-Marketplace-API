@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Auth request/response contracts.
- *
- * Password policy is enforced here so every entry point (register, future
- * password reset) shares one definition: >= 8 characters, at least one letter
- * and one digit.
- */
-
 const { z } = require('zod');
 
 const email = z

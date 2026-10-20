@@ -1,19 +1,7 @@
 'use strict';
 
-/**
- * Data access for the `users` table.
- *
- * Repositories own SQL and nothing else - no HTTP, no business rules. That
- * separation is what lets the service layer be unit-testable with a stubbed
- * repository, and keeps every query in one auditable place.
- */
-
 const db = require('../../utils/db');
 
-/**
- * Columns safe to return to clients. `password_hash` is deliberately absent so
- * it can never leak through a careless `SELECT *`.
- */
 const PUBLIC_COLUMNS = `
   id,
   email,
@@ -25,10 +13,6 @@ const PUBLIC_COLUMNS = `
   updated_at   AS "updatedAt"
 `;
 
-/**
- * @param {object} input
- * @returns {Promise<object>} the created user (public columns only)
- */
 async function create({ email, passwordHash, name, phone = null, role = 'seller' }) {
   const { rows } = await db.query(
     `INSERT INTO users (email, password_hash, name, phone, role)
@@ -39,10 +23,6 @@ async function create({ email, passwordHash, name, phone = null, role = 'seller'
   return rows[0];
 }
 
-/**
- * Lookup used by the login flow - includes the password hash on purpose.
- * @returns {Promise<object|null>}
- */
 async function findByEmailWithHash(email) {
   return db.queryOne(
     `SELECT ${PUBLIC_COLUMNS}, password_hash AS "passwordHash"
@@ -53,12 +33,10 @@ async function findByEmailWithHash(email) {
   );
 }
 
-/** @returns {Promise<object|null>} */
 async function findById(id) {
   return db.queryOne(`SELECT ${PUBLIC_COLUMNS} FROM users WHERE id = $1 LIMIT 1`, [id]);
 }
 
-/** @returns {Promise<boolean>} */
 async function emailExists(email, excludeUserId = null) {
   const { rows } = await db.query(
     `SELECT 1
@@ -71,10 +49,6 @@ async function emailExists(email, excludeUserId = null) {
   return rows.length > 0;
 }
 
-/**
- * Update the caller's own profile.
- * @returns {Promise<object|null>} updated user, or null when nothing matched
- */
 async function updateProfile(id, { name, phone }) {
   return db.queryOne(
     `UPDATE users

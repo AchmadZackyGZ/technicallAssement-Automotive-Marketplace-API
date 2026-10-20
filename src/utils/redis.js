@@ -1,17 +1,5 @@
 'use strict';
 
-/**
- * Redis cache with graceful degradation.
- *
- * The service is a *bonus*, never a hard dependency: if `REDIS_URL` is unset,
- * or the server is down, every helper below silently becomes a no-op and the
- * API keeps serving from PostgreSQL. Callers therefore never need to guard
- * cache access themselves.
- *
- * Keys are namespaced (`amp:` = automotive marketplace) and values are stored
- * as JSON so complex payloads round-trip without surprises.
- */
-
 const { createClient } = require('redis');
 const config = require('../config');
 const logger = require('./logger');
@@ -25,7 +13,6 @@ if (config.redis.enabled) {
   client = createClient({
     url: config.redis.url,
     socket: {
-      // Do not hammer a dead Redis instance; give up quickly and retry lazily.
       reconnectStrategy: (retries) => (retries > 10 ? false : Math.min(retries * 200, 3000)),
     },
   });
@@ -45,7 +32,6 @@ if (config.redis.enabled) {
     logger.warn('Redis error - continuing without cache', { error: error.message });
   });
 
-  // Connect in the background: a slow/unavailable Redis must not delay boot.
   client.connect().catch((error) => {
     logger.warn('Initial Redis connection failed - cache disabled', { error: error.message });
   });
@@ -57,17 +43,6 @@ function isEnabled() {
   return Boolean(client) && ready;
 }
 
-/**
- * Human-readable connection state.
- *
- * `isEnabled()` is deliberately strict - it answers "can I use the cache right
- * now?". At boot that is almost always `false`, because connecting happens in the
- * background. Logging that as "disabled" is misleading: a cache that is merely
- * still connecting is not the same as one that was never configured, and the
- * difference matters when reading boot logs.
- *
- * @returns {'disabled'|'connecting'|'ready'}
- */
 function status() {
   if (!client) return 'disabled';
   return ready ? 'ready' : 'connecting';
@@ -77,10 +52,6 @@ function buildKey(namespace, parts) {
   return `${KEY_PREFIX}${namespace}:${parts}`;
 }
 
-/**
- * Read and JSON-parse a cached value.
- * @returns {Promise<unknown|null>} `null` on miss or when caching is unavailable.
- */
 async function get(key) {
   if (!isEnabled()) return null;
   try {
@@ -92,10 +63,6 @@ async function get(key) {
   }
 }
 
-/**
- * JSON-serialise and store a value with a TTL (seconds, defaults to config).
- * @returns {Promise<boolean>} whether the write succeeded
- */
 async function set(key, value, ttlSeconds = config.redis.ttlSeconds) {
   if (!isEnabled()) return false;
   try {
@@ -107,7 +74,6 @@ async function set(key, value, ttlSeconds = config.redis.ttlSeconds) {
   }
 }
 
-/** Delete a single key. */
 async function del(key) {
   if (!isEnabled()) return false;
   try {
@@ -119,13 +85,6 @@ async function del(key) {
   }
 }
 
-/**
- * Delete every key belonging to a namespace using a non-blocking SCAN loop.
- * Used to invalidate cached search/facet results when listings change.
- *
- * SCAN is used rather than KEYS because KEYS blocks the whole server while it
- * walks the keyspace - unacceptable on a shared Redis.
- */
 async function invalidateNamespace(namespace) {
   if (!isEnabled()) return 0;
   const pattern = `${KEY_PREFIX}${namespace}:*`;
@@ -134,16 +93,11 @@ async function invalidateNamespace(namespace) {
 
   try {
     do {
-      // eslint-disable-next-line no-await-in-loop -- SCAN is inherently sequential
       const reply = await client.scan(cursor, { MATCH: pattern, COUNT: 200 });
 
-      // node-redis normalises the returned cursor to a number, so it must be
-      // coerced back to a string. Comparing `0 !== '0'` would never be false and
-      // the loop would spin forever.
       cursor = String(reply.cursor ?? '0');
 
       if (reply.keys.length) {
-        // eslint-disable-next-line no-await-in-loop -- batched with the scan above
         deleted += await client.del(reply.keys);
       }
     } while (cursor !== '0');
@@ -155,18 +109,6 @@ async function invalidateNamespace(namespace) {
   return deleted;
 }
 
-/**
- * Cache-aside helper.
- *
- * Runs `loader` only on a miss, then stores the result. A loader failure is
- * never masked by the cache layer.
- *
- * @template T
- * @param {string} key
- * @param {() => Promise<T>} loader
- * @param {number} [ttlSeconds]
- * @returns {Promise<{ value: T, cached: boolean }>}
- */
 async function remember(key, loader, ttlSeconds) {
   const hit = await get(key);
   if (hit !== null) return { value: hit, cached: true };

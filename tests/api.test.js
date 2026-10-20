@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * End-to-end API tests.
- *
- * These run against a real PostgreSQL database and drive the HTTP surface, so
- * they cover routing, Zod validation, SQL, the dynamic filter validation and the
- * error envelope in one go.
- *
- * They skip themselves when no database is reachable - see tests/support/harness.js.
- */
-
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -41,7 +31,6 @@ describe('Automotive Marketplace API', () => {
 
     const suffix = harness.uniqueSuffix();
 
-    // --- A seller ----------------------------------------------------------
     const seller = await harness.api(baseUrl, 'POST', '/api/v1/auth/register', {
       body: {
         email: `seller.${suffix}@automotive.test`,
@@ -54,7 +43,6 @@ describe('Automotive Marketplace API', () => {
     ctx.seller = seller.body.data.user;
     ctx.sellerToken = seller.body.data.token;
 
-    // --- A second seller, used to prove the ownership guard ---------------
     const other = await harness.api(baseUrl, 'POST', '/api/v1/auth/register', {
       body: {
         email: `other.${suffix}@automotive.test`,
@@ -65,9 +53,6 @@ describe('Automotive Marketplace API', () => {
     });
     ctx.otherToken = other.body.data.token;
 
-    // --- An admin ----------------------------------------------------------
-    // Category writes are admin-only; promote the account directly because the
-    // API deliberately has no "make me an admin" endpoint.
     const admin = await harness.api(baseUrl, 'POST', '/api/v1/auth/register', {
       body: {
         email: `admin.${suffix}@automotive.test`,
@@ -87,8 +72,6 @@ describe('Automotive Marketplace API', () => {
     });
     ctx.adminToken = adminLogin.body.data.token;
 
-    // --- A small category tree --------------------------------------------
-    // Vehicles > Cars > SUV, plus Vehicles > Motorcycles
     const vehicles = await harness.api(baseUrl, 'POST', '/api/v1/categories', {
       token: ctx.adminToken,
       body: { name: `Vehicles ${suffix}`, slug: `vehicles-${suffix}` },
@@ -113,10 +96,6 @@ describe('Automotive Marketplace API', () => {
     });
     ctx.motorcycles = motorcycles.body.data;
 
-    // --- Filter definitions ------------------------------------------------
-    // Declared on Cars only. SUV inherits them through the materialized path,
-    // while Motorcycles deliberately gets a different set - which is exactly how
-    // "fuel type appears under Cars but not Motorcycles" is expressed.
     await filtersRepository.createDefinition({
       categoryId: ctx.cars.id,
       key: 'fuel_type',
@@ -181,7 +160,6 @@ describe('Automotive Marketplace API', () => {
       sortOrder: 5,
     });
 
-    // Motorcycles gets engine displacement but deliberately NOT fuel_type.
     await filtersRepository.createDefinition({
       categoryId: ctx.motorcycles.id,
       key: 'engine_cc',
@@ -200,7 +178,6 @@ describe('Automotive Marketplace API', () => {
     await harness.shutdown();
   });
 
-  /** Skip helper so every test can bail out cleanly without a database. */
   function requireDatabase(t) {
     if (!available) {
       t.skip(`skipped: ${skipReason}`);
@@ -208,10 +185,6 @@ describe('Automotive Marketplace API', () => {
     }
     return true;
   }
-
-  // -------------------------------------------------------------------------
-  // Health
-  // -------------------------------------------------------------------------
 
   it('GET /health reports service status', async (t) => {
     if (!requireDatabase(t)) return;
@@ -222,16 +195,11 @@ describe('Automotive Marketplace API', () => {
     assert.equal(response.body.checks.database.ok, true);
   });
 
-  // -------------------------------------------------------------------------
-  // Auth
-  // -------------------------------------------------------------------------
-
   it('registers a user and returns a bearer token', (t) => {
     if (!requireDatabase(t)) return;
     assert.ok(ctx.seller.id);
     assert.ok(ctx.sellerToken);
     assert.equal(ctx.seller.role, 'seller');
-    // The password hash must never be part of the payload.
     assert.equal(ctx.seller.passwordHash, undefined);
     assert.equal(ctx.seller.password_hash, undefined);
   });
@@ -316,10 +284,6 @@ describe('Automotive Marketplace API', () => {
     assert.equal(response.status, 401);
   });
 
-  // -------------------------------------------------------------------------
-  // Categories
-  // -------------------------------------------------------------------------
-
   it('derives path and depth for nested categories', (t) => {
     if (!requireDatabase(t)) return;
 
@@ -382,7 +346,6 @@ describe('Automotive Marketplace API', () => {
   it('moves a subtree and rewrites descendant paths', async (t) => {
     if (!requireDatabase(t)) return;
 
-    // Move Cars (with SUV underneath) under Motorcycles, then put it back.
     const moved = await harness.api(baseUrl, 'PATCH', `/api/v1/categories/${ctx.cars.id}`, {
       token: ctx.adminToken,
       body: { parentId: ctx.motorcycles.id },
@@ -415,10 +378,6 @@ describe('Automotive Marketplace API', () => {
     assert.equal(response.body.error.code, 'BAD_REQUEST');
   });
 
-  // -------------------------------------------------------------------------
-  // Listings - CRUD
-  // -------------------------------------------------------------------------
-
   it('creates a listing with images and dynamic attributes', async (t) => {
     if (!requireDatabase(t)) return;
 
@@ -443,8 +402,6 @@ describe('Automotive Marketplace API', () => {
           { url: 'https://images.example.com/avanza-1.jpg', isPrimary: true },
           { url: 'https://images.example.com/avanza-2.jpg' },
         ],
-        // `fuel_type` is a column-backed definition, so it must land in the
-        // column rather than the EAV table. The rest are attribute-backed.
         attributes: { fuel_type: 'gasoline', engine_cc: 1500, seat_count: 7, has_sunroof: false },
       },
     });
@@ -467,11 +424,9 @@ describe('Automotive Marketplace API', () => {
 
     const byKey = Object.fromEntries(ctx.listing.attributes.map((a) => [a.key, a]));
 
-    // fuel_type was sent through `attributes` but is a real column.
     assert.equal(ctx.listing.fuelType, 'gasoline');
     assert.equal(byKey.fuel_type, undefined, 'a column-backed filter must not create an EAV row');
 
-    // The rest are stored as typed EAV values.
     assert.equal(byKey.engine_cc.value, 1500);
     assert.equal(byKey.engine_cc.type, 'range');
     assert.equal(byKey.engine_cc.unit, 'cc');
@@ -483,8 +438,6 @@ describe('Automotive Marketplace API', () => {
   it('rejects fuel_type under Motorcycles, where Cars declares it', async (t) => {
     if (!requireDatabase(t)) return;
 
-    // Motorcycles has no fuel_type definition and does not inherit Cars'
-    // (they are siblings), so the attribute must be refused.
     const rejected = await harness.api(baseUrl, 'POST', '/api/v1/listings', {
       token: ctx.sellerToken,
       body: {
@@ -501,7 +454,6 @@ describe('Automotive Marketplace API', () => {
     assert.equal(rejected.status, 422);
     assert.ok(rejected.body.error.details.some((d) => d.code === 'unknown_attribute'));
 
-    // ...but engine_cc, which Motorcycles does declare, is accepted.
     const accepted = await harness.api(baseUrl, 'POST', '/api/v1/listings', {
       token: ctx.sellerToken,
       body: {
@@ -642,7 +594,6 @@ describe('Automotive Marketplace API', () => {
     assert.equal(deleted.body.data.status, 'removed');
     assert.equal(deleted.body.meta.softDeleted, true);
 
-    // Still present in the table (soft delete), but no longer readable.
     const read = await harness.api(baseUrl, 'GET', `/api/v1/listings/${ctx.listing.id}`);
     assert.equal(read.status, 404);
 
@@ -672,13 +623,7 @@ describe('Automotive Marketplace API', () => {
     assert.equal(response.body.error.code, 'NOT_FOUND');
   });
 
-  // -------------------------------------------------------------------------
-  // Browse, filtering and cursor pagination
-  // -------------------------------------------------------------------------
-
   describe('browsing and cursor pagination', () => {
-    // A dedicated category and a known set of listings, so assertions about
-    // paging and filtering do not depend on anything created earlier.
     const suite = {};
 
     before(async () => {
@@ -698,8 +643,6 @@ describe('Automotive Marketplace API', () => {
       });
       suite.child = child.body.data;
 
-      // An attribute-backed range filter, declared on the parent so the child
-      // inherits it through the materialized path.
       await filtersRepository.createDefinition({
         categoryId: suite.category.id,
         key: 'engine_cc',
@@ -712,14 +655,11 @@ describe('Automotive Marketplace API', () => {
         sortOrder: 1,
       });
 
-      // Six listings with strictly increasing prices, three in the parent
-      // category and three in the child, so subtree scoping is observable.
       const prices = [100_000_000, 200_000_000, 300_000_000, 400_000_000, 500_000_000, 600_000_000];
       suite.ids = [];
 
       for (let index = 0; index < prices.length; index += 1) {
         const target = index < 3 ? suite.category.id : suite.child.id;
-        // eslint-disable-next-line no-await-in-loop -- ordering must be deterministic
         const created = await harness.api(baseUrl, 'POST', '/api/v1/listings', {
           token: ctx.sellerToken,
           body: {
@@ -732,7 +672,6 @@ describe('Automotive Marketplace API', () => {
             price: prices[index],
             condition: 'used',
             fuelType: 'gasoline',
-            // 1000, 1100, ... 1500 cc
             attributes: { engine_cc: 1000 + index * 100 },
           },
         });
@@ -755,7 +694,6 @@ describe('Automotive Marketplace API', () => {
         const url = `/api/v1/listings?categoryId=${suite.category.id}&limit=2${
           cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
         }`;
-        // eslint-disable-next-line no-await-in-loop -- paging is inherently sequential
         const response = await harness.api(baseUrl, 'GET', url);
 
         assert.equal(response.status, 200);
@@ -833,8 +771,6 @@ describe('Automotive Marketplace API', () => {
     it('filters on a dynamic range attribute', async (t) => {
       if (!requireDatabase(t)) return;
 
-      // Fixtures carry engine_cc of 1000..1500. Asking for >= 1200 must return
-      // exactly the three listings created with 1200, 1300 and 1400 ... plus 1500.
       const response = await harness.api(
         baseUrl,
         'GET',

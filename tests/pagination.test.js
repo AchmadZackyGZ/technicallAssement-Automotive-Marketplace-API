@@ -1,12 +1,5 @@
 'use strict';
 
-/**
- * Unit tests for cursor pagination.
- *
- * These need no database: they cover the pure encode/decode/build logic that the
- * browse and search endpoints depend on.
- */
-
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -32,7 +25,6 @@ test('every advertised sort key resolves', () => {
   for (const key of SORT_KEYS) {
     const resolved = resolveSort(key);
     assert.ok(resolved.direction, `sort key ${key} should have a direction`);
-    // `relevance` is ordered by a computed expression rather than a column.
     if (key === 'relevance') {
       assert.equal(resolved.column, null);
       assert.equal(resolved.requiresQuery, true);
@@ -43,8 +35,6 @@ test('every advertised sort key resolves', () => {
 });
 
 test('a cursor round-trips through encode/decode', () => {
-  // Rows are aliased to camelCase by the repositories, so the cursor reads the
-  // camelCase property rather than the snake_case database column.
   const row = { id: '11111111-2222-3333-4444-555555555555', createdAt: new Date('2026-01-02T03:04:05.000Z') };
   const cursor = encodeCursor('newest', row);
   const decoded = decodeCursor(cursor, 'newest');
@@ -103,7 +93,6 @@ test('buildPage trims the look-ahead row and exposes the next cursor', () => {
     { id: 'c', createdAt: '2026-01-01T00:00:00.000Z' },
   ];
 
-  // limit = 2 with 3 rows means another page exists.
   const page = buildPage(rows, 2, 'newest');
 
   assert.equal(page.items.length, 2);

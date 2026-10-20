@@ -1,12 +1,5 @@
 'use strict';
 
-/**
- * Category request contracts.
- *
- * `slug` is optional everywhere: when omitted the service derives one from the
- * name. Clients may set it explicitly when they need a stable URL segment.
- */
-
 const { z } = require('zod');
 
 const uuid = z.string().uuid('Must be a valid UUID');
@@ -28,7 +21,6 @@ const name = z
 const createBody = z.object({
   name,
   slug: slug.optional(),
-  // `null` explicitly creates a root category; omitting it does the same.
   parentId: uuid.nullable().optional(),
   description: z.string().trim().max(2000).nullable().optional(),
   icon: z.string().trim().max(60).nullable().optional(),
@@ -52,10 +44,6 @@ const updateBody = z
 
 const idParam = z.object({ id: uuid });
 
-/**
- * `GET /categories` accepts a depth limit so the full tree can be trimmed for
- * lightweight clients, plus a flag to include inactive branches.
- */
 const listQuery = z.object({
   maxDepth: z.coerce.number().int().min(0).max(20).optional(),
   includeInactive: z

@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Search endpoint tests.
- *
- * Exercises full-text matching, the trigram (partial word / typo) branches, and
- * combinations of free text with structured filters - against a real PostgreSQL
- * database, so the tsvector and GIN indexes are genuinely involved.
- */
-
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -120,8 +112,6 @@ describe('Search API', () => {
     });
     ctx.adminToken = adminLogin.body.data.token;
 
-    // A dedicated root category keeps the fixtures out of every other test's
-    // result set.
     const category = await harness.api(baseUrl, 'POST', '/api/v1/categories', {
       token: ctx.adminToken,
       body: { name: `Search Fixtures ${suffix}`, slug: `search-fixtures-${suffix}` },
@@ -129,7 +119,6 @@ describe('Search API', () => {
     ctx.category = category.body.data;
 
     for (const fixture of FIXTURES) {
-      // eslint-disable-next-line no-await-in-loop -- fixtures are order-independent but cheap
       const created = await harness.api(baseUrl, 'POST', '/api/v1/listings', {
         token: ctx.token,
         body: {
@@ -169,7 +158,6 @@ describe('Search API', () => {
     return true;
   }
 
-  /** Scope every search to the fixture category so results are deterministic. */
   const scoped = (extra = '') => `/api/v1/listings/search?categoryId=${ctx.category.id}&limit=50${extra}`;
 
   it('matches on a whole word in the title', async (t) => {
@@ -196,7 +184,6 @@ describe('Search API', () => {
   it('matches a partial word through the trigram branch', async (t) => {
     if (!requireDatabase(t)) return;
 
-    // "avan" is not a lexeme, so pure full-text search cannot match it.
     const response = await harness.api(baseUrl, 'GET', scoped('&q=avan'));
     assert.equal(response.status, 200);
     assert.ok(
@@ -302,10 +289,6 @@ describe('Search API', () => {
     assert.equal(response.status, 422);
   });
 
-  // -------------------------------------------------------------------------
-  // Autocomplete
-  // -------------------------------------------------------------------------
-
   describe('autocomplete', () => {
     const suggest = (params) =>
       harness.api(baseUrl, 'GET', `/api/v1/listings/search/suggest?${params}`);
@@ -350,7 +333,6 @@ describe('Search API', () => {
     it('ranks prefix matches ahead of mid-string matches', async (t) => {
       if (!requireDatabase(t)) return;
 
-      // "an" appears mid-string in many values; a prefix match must win.
       const response = await suggest(`q=toyota&categoryId=${ctx.category.id}`);
       const makes = response.body.data.make;
       assert.equal(makes[0].prefixMatch, true);
@@ -384,8 +366,6 @@ describe('Search API', () => {
     it('scopes suggestions to the requested category', async (t) => {
       if (!requireDatabase(t)) return;
 
-      // Scoped to the fixture category, "honda" is only present via Mobilio;
-      // a city that exists elsewhere in the database must not appear.
       const scoped = await suggest(`q=den&categoryId=${ctx.category.id}`);
       const cities = scoped.body.data.city.map((item) => item.value);
       assert.deepEqual(cities, ['Denpasar']);

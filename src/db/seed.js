@@ -1,27 +1,5 @@
 'use strict';
 
-/**
- * Seed the database with realistic Indonesian marketplace data.
- *
- *   npm run seed
- *
- * WHAT IT DOES
- *   Resets marketplace data (categories, filter definitions, users, listings,
- *   images, attributes, favourites) and regenerates it from scratch. This is
- *   destructive by design: a seed command that half-appends to existing data is
- *   not reproducible.
- *
- * DETERMINISM
- *   Generation uses a seeded PRNG, so the same `SEED_RANDOM_SEED` always
- *   produces the same listings. Two reviewers running this get identical data,
- *   which makes the numbers in the README and the screenshots verifiable.
- *
- * CONFIGURATION (see .env.example)
- *   SEED_LISTINGS      number of listings to generate (default 600, min 500)
- *   SEED_SELLERS       number of seller accounts        (default 25)
- *   SEED_RANDOM_SEED   PRNG seed                        (default 42)
- */
-
 const db = require('../utils/db');
 const logger = require('../utils/logger');
 const config = require('../config');
@@ -31,10 +9,6 @@ const { seedCategories } = require('./seeds/categories.seed');
 const { seedUsers } = require('./seeds/users.seed');
 const { seedListings } = require('./seeds/listings.seed');
 
-/**
- * Order matters only for readability - CASCADE handles the dependencies.
- * RESTART IDENTITY keeps sequences tidy for any future serial columns.
- */
 const RESET_SQL = `
   TRUNCATE TABLE
     listing_attributes,
@@ -47,7 +21,6 @@ const RESET_SQL = `
   RESTART IDENTITY CASCADE
 `;
 
-/** Minimum the brief asks for. */
 const MIN_LISTINGS = 500;
 
 async function run() {
@@ -88,7 +61,6 @@ async function run() {
     return { categories, users, listings };
   });
 
-  // --- Report --------------------------------------------------------------
   const [stats, sampleFacets] = await Promise.all([
     db.query(`
       SELECT
@@ -116,16 +88,11 @@ async function run() {
 
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(2);
 
-  // eslint-disable-next-line no-console -- CLI summary
   console.log('\n=== Seed complete ===');
-  // eslint-disable-next-line no-console -- CLI summary
   console.table(stats.rows[0]);
-  // eslint-disable-next-line no-console -- CLI summary
   console.log('\nTop makes:');
-  // eslint-disable-next-line no-console -- CLI summary
   console.table(sampleFacets.rows);
 
-  // eslint-disable-next-line no-console -- CLI summary
   console.log(`
 Demo credentials
   admin  admin@automotive.test  / Admin12345   (may create/update categories)

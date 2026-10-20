@@ -1,22 +1,5 @@
 'use strict';
 
-/**
- * Listing request contracts.
- *
- * Two kinds of input are accepted for a listing's characteristics:
- *
- *   1. Core columns (`make`, `year`, `price`, ...) - the attributes every
- *      vehicle has, so they are first-class fields with first-class validation.
- *
- *   2. `attributes` - a free-form map keyed by a *filter definition key*
- *      (`engine_cc`, `seat_count`, `has_sunroof`, ...). Which keys are legal
- *      depends on the listing's category, so they cannot be expressed in Zod.
- *      The service validates them against `filter_definitions`, and a
- *      column-backed definition is transparently routed to its column - meaning
- *      a client can send either `fuelType: "diesel"` or
- *      `attributes: { fuel_type: "diesel" }` and get the same result.
- */
-
 const { z } = require('zod');
 
 const { SORT_KEYS, DEFAULT_SORT, DEFAULT_LIMIT, MAX_LIMIT } = require('../../utils/pagination');
@@ -38,7 +21,6 @@ const year = z.coerce
   .number({ required_error: 'Year is required' })
   .int('Year must be a whole number')
   .min(1900, 'Year must be 1900 or later')
-  // New models are usually announced a year ahead, so allow one future year.
   .max(CURRENT_YEAR + 1, `Year must be ${CURRENT_YEAR + 1} or earlier`);
 
 const mileageKm = z.coerce.number().int('Mileage must be a whole number').min(0).max(2_000_000);
@@ -60,7 +42,6 @@ const image = z.object({
   isPrimary: z.coerce.boolean().optional(),
 });
 
-/** Attribute values are validated against their filter definition, not here. */
 const attributeValue = z.union([z.string().max(200), z.number(), z.boolean(), z.null()]);
 
 const createBody = z.object({
@@ -110,18 +91,12 @@ const updateBody = z
 
 const idParam = z.object({ id: uuid });
 
-// ---------------------------------------------------------------------------
-// Browse / search query string
-// ---------------------------------------------------------------------------
-
-/** `?make=Toyota,Honda` -> ['Toyota', 'Honda']. */
 const csvList = z
   .union([z.string(), z.array(z.string())])
   .transform((value) => (Array.isArray(value) ? value : value.split(',')))
   .transform((values) => values.map((item) => item.trim()).filter(Boolean))
   .refine((values) => values.length > 0, { message: 'Provide at least one value' });
 
-/** Same, but restricted to a known set of values. */
 const csvEnum = (values) =>
   csvList.pipe(
     z.array(z.enum(values)).min(1),
@@ -132,7 +107,6 @@ const boolQuery = z
   .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
   .transform((value) => (typeof value === 'boolean' ? value : ['true', '1'].includes(value)));
 
-/** `attr[engine_cc][min]=1000` or `attr[drive_type]=FWD`. */
 const attrRange = z.object({
   min: z.coerce.number().optional(),
   max: z.coerce.number().optional(),
@@ -142,17 +116,12 @@ const attrFilterValue = z.union([attrRange, z.string().max(200), z.number(), z.b
 const browseQuery = z.object({
   q: z.string().trim().min(1).max(200).optional(),
 
-  // When true (the default) the text query also matches partial words and typos
-  // through pg_trgm, in addition to the full-text tsvector match.
   fuzzy: boolQuery.default(true),
 
-  // Category scope. `includeSubcategories` defaults to true so browsing "Cars"
-  // naturally includes "Cars > SUV".
   categoryId: uuid.optional(),
   categorySlug: z.string().trim().max(140).optional(),
   includeSubcategories: boolQuery.default(true),
 
-  // Vehicle attributes.
   make: csvList.optional(),
   model: csvList.optional(),
   condition: csvEnum(['new', 'used', 'certified']).optional(),
@@ -160,26 +129,21 @@ const browseQuery = z.object({
   fuelType: csvEnum(['gasoline', 'diesel', 'electric', 'hybrid']).optional(),
   color: csvList.optional(),
 
-  // Location.
   city: csvList.optional(),
   province: z.string().trim().max(80).optional(),
 
-  // Ranges.
   yearMin: z.coerce.number().int().min(1900).max(2100).optional(),
   yearMax: z.coerce.number().int().min(1900).max(2100).optional(),
   priceMin: z.coerce.number().min(0).optional(),
   priceMax: z.coerce.number().min(0).optional(),
   mileageMax: z.coerce.number().int().min(0).optional(),
 
-  // Ownership / visibility.
   sellerId: uuid.optional(),
   isFeatured: boolQuery.optional(),
   status: csvEnum(['available', 'sold', 'pending', 'removed']).optional(),
 
-  // Dynamic, category-specific filters.
   attr: z.record(attrFilterValue).optional(),
 
-  // Pagination.
   sort: z.enum(SORT_KEYS).default(DEFAULT_SORT),
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
   cursor: z.string().max(500).optional(),

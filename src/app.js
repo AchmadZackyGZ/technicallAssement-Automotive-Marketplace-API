@@ -1,16 +1,5 @@
 'use strict';
 
-/**
- * Express application factory.
- *
- * `createApp()` returns a fully configured app without starting a listener,
- * which keeps the HTTP surface testable (supertest-style) and lets `server.js`
- * own process concerns such as signals and shutdown.
- *
- * Middleware order is intentional and documented inline:
- *   security -> observability -> parsing -> throttling -> routes -> errors
- */
-
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
@@ -28,14 +17,11 @@ const { apiLimiter } = require('./middleware/rateLimiter');
 function createApp() {
   const app = express();
 
-  // Behind Railway/Render's proxy we need the real client IP for rate limiting.
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
 
-  // --- Security ------------------------------------------------------------
   app.use(
     helmet({
-      // Swagger UI ships inline scripts/styles, so CSP is relaxed for /docs.
       contentSecurityPolicy: config.isProduction
         ? {
             directives: {
@@ -58,7 +44,6 @@ function createApp() {
     }),
   );
 
-  // --- Observability -------------------------------------------------------
   if (!config.isTest) {
     app.use(
       morgan(config.isProduction ? 'combined' : 'dev', {
@@ -67,15 +52,12 @@ function createApp() {
     );
   }
 
-  // --- Body parsing --------------------------------------------------------
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   app.use(compression());
 
-  // --- Throttling ----------------------------------------------------------
   app.use(apiLimiter);
 
-  // --- Service index -------------------------------------------------------
   app.get('/', (_req, res) => {
     res.json({
       name: 'Automotive Marketplace API',
@@ -86,17 +68,10 @@ function createApp() {
     });
   });
 
-  // Hosting platforms probe the root path; API clients use the versioned alias
-  // registered in routes/index.js. Same handler, two entry points.
   app.get('/health', health);
 
-  // --- Feature routes ------------------------------------------------------
   app.use(config.apiPrefix, routes);
 
-  // --- API documentation ---------------------------------------------------
-  // Served from the same spec that the export script writes to
-  // docs/openapi.json, so what a reviewer reads and what Swagger renders are
-  // literally the same document.
   app.get(`${config.apiPrefix}/openapi.json`, (_req, res) => res.json(swaggerSpec));
 
   app.use(
@@ -114,7 +89,6 @@ function createApp() {
     }),
   );
 
-  // --- Terminal handlers (must be last) ------------------------------------
   app.use(notFound);
   app.use(errorHandler);
 

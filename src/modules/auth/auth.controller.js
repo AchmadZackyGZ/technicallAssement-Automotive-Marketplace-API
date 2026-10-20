@@ -1,16 +1,8 @@
-'use strict';
+"use strict";
 
-/**
- * HTTP layer for authentication.
- *
- * Controllers stay deliberately thin: read validated input, call the service,
- * shape the response. No SQL, no business rules.
- */
+const { asyncHandler } = require("../../utils/asyncHandler");
+const service = require("./auth.service");
 
-const { asyncHandler } = require('../../utils/asyncHandler');
-const service = require('./auth.service');
-
-/** POST /auth/register */
 const register = asyncHandler(async (req, res) => {
   const result = await service.register(req.body);
   res.status(201).json({
@@ -23,7 +15,6 @@ const register = asyncHandler(async (req, res) => {
   });
 });
 
-/** POST /auth/login */
 const login = asyncHandler(async (req, res) => {
   const result = await service.login(req.body);
   res.json({
@@ -36,13 +27,11 @@ const login = asyncHandler(async (req, res) => {
   });
 });
 
-/** GET /auth/me */
 const me = asyncHandler(async (req, res) => {
   const user = await service.getProfile(req.user.id);
   res.json({ data: user });
 });
 
-/** PATCH /auth/me */
 const updateMe = asyncHandler(async (req, res) => {
   const user = await service.updateProfile(req.user.id, req.body);
   res.json({ data: user });

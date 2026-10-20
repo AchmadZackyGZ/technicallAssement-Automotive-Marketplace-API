@@ -1,16 +1,5 @@
 'use strict';
 
-/**
- * Write the assembled OpenAPI document to docs/openapi.json.
- *
- *   npm run docs:export
- *
- * The same spec is served live at `${API_PREFIX}/docs`, so this is purely for
- * reviewers who want to import the contract into Postman or Insomnia, or diff it
- * between commits. The generated file is committed on purpose: a reviewer should
- * be able to read the API contract without running anything.
- */
-
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -33,7 +22,6 @@ function main() {
   const schemas = Object.keys(swaggerSpec.components?.schemas ?? {}).length;
 
   if (operations === 0) {
-    // eslint-disable-next-line no-console -- CLI output
     console.error('No operations were discovered - are the @openapi blocks present?');
     process.exitCode = 1;
     return;
@@ -42,9 +30,7 @@ function main() {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, `${JSON.stringify(swaggerSpec, null, 2)}\n`, 'utf8');
 
-  // eslint-disable-next-line no-console -- CLI output
   console.log(`Wrote ${outputPath}`);
-  // eslint-disable-next-line no-console -- CLI output
   console.log(`  ${Object.keys(swaggerSpec.paths).length} paths, ${operations} operations, ${schemas} schemas`);
 }
 

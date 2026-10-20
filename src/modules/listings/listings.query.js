@@ -1,27 +1,7 @@
 'use strict';
 
-/**
- * Translates a validated filter object into a SQL WHERE / ORDER BY fragment.
- *
- * This is the single place that knows how a filter maps onto the schema, and it
- * is shared by three callers:
- *
- *   - GET /listings                 (browse)
- *   - GET /listings/search          (full-text + faceted search)
- *   - GET /filters, /filters/:id    (facet counts - same WHERE, no ORDER BY)
- *
- * Keeping one translator means a filter can never behave differently between
- * browsing and searching, and every parameter is bound - no value is ever
- * interpolated into the SQL string. The only interpolated fragments are column
- * names and the rank expression, both taken from internal whitelists.
- */
-
 const { resolveSort } = require('../../utils/pagination');
 
-/**
- * Plain column filters. `array` filters accept a list of values (CSV in the
- * query string) and use `= ANY(...)`, which is index-backed.
- */
 const COLUMN_FILTERS = [
   { key: 'make', column: 'make', mode: 'array' },
   { key: 'model', column: 'model', mode: 'array' },
@@ -33,21 +13,18 @@ const COLUMN_FILTERS = [
   { key: 'province', column: 'location_province', mode: 'scalar' },
 ];
 
-/** `{ column, minKey, maxKey }` range filters. */
 const RANGE_FILTERS = [
   { column: 'year', minKey: 'yearMin', maxKey: 'yearMax' },
   { column: 'price', minKey: 'priceMin', maxKey: 'priceMax' },
   { column: 'mileage_km', minKey: null, maxKey: 'mileageMax' },
 ];
 
-/** Values that mean "true" once they have come through a query string. */
 function toBoolean(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value !== 0;
   return ['true', '1', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
-/** Normalise a filter value into an array of non-empty strings. */
 function toArray(value) {
   if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
   return String(value)
@@ -56,46 +33,15 @@ function toArray(value) {
     .filter(Boolean);
 }
 
-/**
- * Build the query fragments for a listing search.
- *
- * @param {object} input               Validated filter input
- * @param {object} [options]
- * @param {string} [options.alias]     Table alias for the listings table
- * @param {?object} [options.cursor]   Decoded cursor payload
- * @param {?string[]} [options.categoryIds] Pre-resolved category scope (the
- *                                     category plus its descendants)
- * @returns {{ conditions: string[], params: Array, orderBy: string,
- *             keysetExpression: ?string, sortKey: string, queryParamIndex: ?number }}
- */
 function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds = null } = {}) {
   const conditions = [];
   const params = [];
 
-  /** Bind a value and return its placeholder, e.g. `$3`. */
   const bind = (value) => {
     params.push(value);
     return `$${params.length}`;
   };
 
-  // --- Full-text search ----------------------------------------------------
-  // Two complementary strategies, OR-ed together:
-  //
-  //   tsvector / GIN   stemming, word order, multi-word queries
-  //                    ("avanza 2019 jakarta"). Needs whole lexemes.
-  //   pg_trgm / GIN    partial words and typos, which full-text search cannot
-  //                    match because it operates on complete lexemes. Two
-  //                    different trigram features are used because they solve
-  //                    different problems:
-  //                      ILIKE '%q%'  -> substring ("avan" finds "Avanza")
-  //                      make % q     -> similarity ("Toyata" finds "Toyota")
-  //
-  // `websearch_to_tsquery` accepts natural input ("toyota avanza -diesel"),
-  // tolerates quotes and dashes, and never raises a syntax error on odd input -
-  // unlike `to_tsquery`, which would turn a stray character into a 500.
-  //
-  // The trigram branches can be switched off with `?fuzzy=false` for callers
-  // that want strict lexical matching.
   let queryParamIndex = null;
   if (input.q) {
     queryParamIndex = params.length + 1;
@@ -105,22 +51,14 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
     const branches = [`${alias}.search_vector @@ websearch_to_tsquery('simple', ${q})`];
 
     if (input.fuzzy !== false) {
-      // Reusing the same placeholder keeps the query parameterised.
       branches.push(
         `${alias}.title ILIKE '%' || ${q} || '%'`,
         `${alias}.make ILIKE '%' || ${q} || '%'`,
         `${alias}.model ILIKE '%' || ${q} || '%'`,
       );
 
-      // Trigram similarity is only meaningful for a single token. Applied to a
-      // multi-word query it compares the phrase against a one-word column, and
-      // the shared trigrams of a short make name ("Toyota" vs "toyota innova")
-      // are enough to clear the 0.3 threshold - which would match every Toyota
-      // and quietly destroy the precision of multi-word search.
       const isSingleToken = !/\s/.test(input.q.trim());
       if (isSingleToken && input.q.trim().length >= 4) {
-        // `%` is pg_trgm's similarity operator, backed by the same GIN index.
-        // It is what makes a typo like "Toyata" still find "Toyota".
         branches.push(`${alias}.make % ${q}`, `${alias}.model % ${q}`);
       }
     }
@@ -128,14 +66,10 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
     conditions.push(`(${branches.join(' OR ')})`);
   }
 
-  // --- Category scope ------------------------------------------------------
-  // The service resolves the category subtree to a list of ids, so the database
-  // does one `= ANY(...)` rather than a correlated subquery per row.
   if (categoryIds && categoryIds.length) {
     conditions.push(`${alias}.category_id = ANY(${bind(categoryIds)}::uuid[])`);
   }
 
-  // --- Visibility ----------------------------------------------------------
   if (input.status) {
     conditions.push(`${alias}.status = ANY(${bind(toArray(input.status))}::text[])`);
   } else {
@@ -150,7 +84,6 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
     conditions.push(`${alias}.is_featured = ${bind(toBoolean(input.isFeatured))}`);
   }
 
-  // --- Column filters ------------------------------------------------------
   for (const filter of COLUMN_FILTERS) {
     const value = input[filter.key];
     if (value === undefined || value === null || value === '') continue;
@@ -162,7 +95,6 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
     }
   }
 
-  // --- Range filters -------------------------------------------------------
   for (const filter of RANGE_FILTERS) {
     const min = filter.minKey ? input[filter.minKey] : undefined;
     const max = filter.maxKey ? input[filter.maxKey] : undefined;
@@ -175,9 +107,6 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
     }
   }
 
-  // --- Dynamic (EAV) attribute filters -------------------------------------
-  // Syntax: attr[engine_cc][min]=1000, attr[has_sunroof]=true,
-  //         attr[drive_type]=FWD  (or a comma-separated list)
   if (input.attr && typeof input.attr === 'object') {
     for (const [key, raw] of Object.entries(input.attr)) {
       if (raw === undefined || raw === null || raw === '') continue;
@@ -196,7 +125,7 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
         if (raw.max !== undefined && raw.max !== null && raw.max !== '') {
           inner.push(`la.value_num <= ${bind(raw.max)}`);
         }
-        if (inner.length === 1) continue; // nothing to constrain on
+        if (inner.length === 1) continue;
       } else if (asBoolean) {
         inner.push(`la.value_bool = ${bind(toBoolean(raw))}`);
       } else {
@@ -212,9 +141,6 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
     }
   }
 
-  // --- Ordering ------------------------------------------------------------
-  // `relevance` is only meaningful with a full-text query; without one the
-  // service downgrades the request to `newest` before it reaches this point.
   const sortKey = input.sort || 'newest';
   const { column, direction } = resolveSort(sortKey);
 
@@ -222,8 +148,6 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
   let keysetExpression = null;
 
   if (sortKey === 'relevance' && queryParamIndex !== null) {
-    // The rank expression reuses the already-bound query placeholder, so it
-    // stays parameterised rather than inlining user text.
     keysetExpression = `ts_rank(${alias}.search_vector, websearch_to_tsquery('simple', $${queryParamIndex}))`;
     orderBy = `${keysetExpression} DESC, ${alias}.id DESC`;
   } else {
@@ -231,7 +155,6 @@ function buildListingQuery(input = {}, { alias = 'l', cursor = null, categoryIds
     keysetExpression = `${alias}.${column}`;
   }
 
-  // --- Keyset cursor -------------------------------------------------------
   if (cursor) {
     const operator = direction === 'DESC' ? '<' : '>';
     conditions.push(

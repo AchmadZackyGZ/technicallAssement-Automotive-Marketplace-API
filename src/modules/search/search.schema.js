@@ -1,17 +1,5 @@
 'use strict';
 
-/**
- * Search request contracts.
- *
- * The search query is the browse query plus three switches, which keeps the two
- * endpoints honest: anything you can filter while browsing, you can filter while
- * searching.
- *
- *   fuzzy  - also match partial words and typos via pg_trgm (default true)
- *   facets - include facet counts for the whole matching set (default true)
- *   facetKeys - restrict which facet groups are computed
- */
-
 const { z } = require('zod');
 
 const { browseQuery } = require('../listings/listings.schema');
@@ -38,7 +26,6 @@ const searchQuery = browseQuery.extend({
     .optional(),
 });
 
-/** Autocomplete. `q` is required here - there is nothing to suggest otherwise. */
 const suggestQuery = z.object({
   q: z
     .string({ required_error: 'A search term is required' })

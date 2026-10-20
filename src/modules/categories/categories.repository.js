@@ -1,11 +1,5 @@
 'use strict';
 
-/**
- * Data access for the category tree.
- *
- * The materialized path lets most of these queries avoid recursion entirely.
- */
-
 const db = require('../../utils/db');
 
 const COLUMNS = `
@@ -23,15 +17,6 @@ const COLUMNS = `
   c.updated_at   AS "updatedAt"
 `;
 
-/**
- * Every category, ordered by materialized path.
- *
- * Ordering by `path` yields a depth-first traversal for free, so the service can
- * assemble the nested tree in a single pass without any recursive query.
- *
- * `listingCount` is the number of *directly* attached, visible listings - cheap
- * to compute with one aggregate join instead of a per-node subquery.
- */
 async function findAll({ includeInactive = false, maxDepth = null } = {}) {
   const conditions = [];
   const params = [];
@@ -92,7 +77,6 @@ async function findBySlug(slug, parentId = null) {
   );
 }
 
-/** Direct children only. */
 async function findChildren(id) {
   const { rows } = await db.query(
     `SELECT ${COLUMNS}
@@ -104,12 +88,6 @@ async function findChildren(id) {
   return rows;
 }
 
-/**
- * The node and every descendant, via a single indexed prefix scan on `path`.
- *
- * This is the query the materialized path exists for: no recursive CTE, no
- * depth limit, one index range scan on `categories_path_prefix_idx`.
- */
 async function findSubtree(id) {
   const { rows } = await db.query(
     `SELECT ${COLUMNS}
@@ -121,7 +99,6 @@ async function findSubtree(id) {
   return rows;
 }
 
-/** Ids of the node and all of its descendants - used to scope listing queries. */
 async function findSubtreeIds(id) {
   const { rows } = await db.query(
     `SELECT c.id
@@ -132,7 +109,6 @@ async function findSubtreeIds(id) {
   return rows.map((row) => row.id);
 }
 
-/** Slugs that already exist under a given parent - used for slug de-duplication. */
 async function findSiblingSlugs(parentId, prefix) {
   const { rows } = await db.query(
     `SELECT slug
@@ -144,11 +120,6 @@ async function findSiblingSlugs(parentId, prefix) {
   return rows.map((row) => row.slug);
 }
 
-/**
- * Insert a node. `path` and `depth` are filled in by the
- * `categories_assign_path_trigger` BEFORE INSERT trigger, so they are not
- * passed here - one less thing that can disagree with reality.
- */
 async function create({ name, slug, parentId = null, description = null, icon = null, sortOrder = 0, isActive = true }) {
   return db.queryOne(
     `INSERT INTO categories (name, slug, parent_id, description, icon, sort_order, is_active)
@@ -160,10 +131,6 @@ async function create({ name, slug, parentId = null, description = null, icon = 
   );
 }
 
-/**
- * Partial update using COALESCE so only the supplied fields change.
- * @returns {Promise<object|null>}
- */
 async function update(id, fields) {
   return db.queryOne(
     `UPDATE categories
@@ -189,16 +156,6 @@ async function update(id, fields) {
   );
 }
 
-/**
- * Reparent a node and rewrite its whole subtree, atomically.
- *
- * Runs inside a transaction and locks the moved node so a concurrent move
- * cannot interleave. The descendant rewrite is a single set-based UPDATE that
- * preserves each descendant's suffix while swapping the prefix - see
- * `categories_rebuild_subtree_paths` in migration 003.
- *
- * @returns {Promise<{ node: object|null, descendantsUpdated: number }>}
- */
 async function move(id, newParentId) {
   return db.withTransaction(async (client) => {
     const { rows: currentRows } = await client.query(
@@ -254,15 +211,6 @@ async function move(id, newParentId) {
   });
 }
 
-/**
- * Hard delete.
- *
- * `listings.category_id` is ON DELETE RESTRICT, so PostgreSQL refuses to delete
- * a category that still has listings and the API surfaces that as a 409 rather
- * than silently orphaning data. Descendant categories cascade.
- *
- * @returns {Promise<{ id: string }|null>}
- */
 async function remove(id) {
   return db.queryOne('DELETE FROM categories WHERE id = $1 RETURNING id', [id]);
 }

@@ -1,10 +1,3 @@
--- ===========================================================================
--- 002 - Users
--- ===========================================================================
--- Sellers own listings; buyers browse them. A single `role` column keeps the
--- model simple while leaving room for an admin/moderator role.
--- ===========================================================================
-
 CREATE TABLE users (
   id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
   email         VARCHAR(255) NOT NULL,
@@ -21,9 +14,6 @@ CREATE TABLE users (
   CONSTRAINT users_name_check   CHECK (length(trim(name)) > 0)
 );
 
--- Email uniqueness must be case-insensitive: "Seller@Mail.com" and
--- "seller@mail.com" are the same account. A functional unique index does that
--- without forcing every writer to lowercase the value first.
 CREATE UNIQUE INDEX users_email_lower_unique_idx ON users (LOWER(email));
 
 CREATE INDEX users_role_idx      ON users (role);

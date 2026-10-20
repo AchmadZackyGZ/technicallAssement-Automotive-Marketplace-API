@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Rate limiting.
- *
- * Two limiters:
- *   - `apiLimiter`   - generous global guard applied to every route
- *   - `authLimiter`  - strict limit for credential endpoints (brute-force guard)
- *
- * Both are disabled while running the test suite.
- */
-
 const rateLimit = require('express-rate-limit');
 const config = require('../config');
 

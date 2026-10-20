@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Typed application errors.
- *
- * Controllers and services throw these; `middleware/errorHandler` is the only
- * place that knows how to turn them into an HTTP response. Every error carries
- * a stable machine-readable `code` so API consumers never have to parse prose.
- */
-
 class AppError extends Error {
   constructor(statusCode, code, message, details) {
     super(message);

@@ -1,33 +1,11 @@
 'use strict';
 
-/**
- * Seed listings, their image galleries and their dynamic attributes.
- *
- * The generator models the real market rather than sampling uniformly:
- *
- *   - A price is drawn from the model's own band and then depreciated by age, so
- *     a 2015 Avanza is never priced like a 2024 one. Uniform sampling over the
- *     whole Rp 50 jt - Rp 2 M range would make every price filter meaningless.
- *   - Mileage follows age and condition, not a flat range.
- *   - Fuel type is constrained by what the model is actually sold with here, so
- *     diesel only shows up on the models that have it - which is what makes the
- *     fuel-type facet informative.
- *   - Cities are weighted, because listings really are concentrated in Jakarta,
- *     Surabaya and Bandung.
- *
- * Attributes are written to the EAV table and reference the definition declared
- * on the listing's *branch* (Cars, Motorcycles, Commercial Vehicles), which is
- * exactly how the API resolves them at read time.
- */
-
 const { CITIES, COLORS, CARS, MOTORCYCLES, COMMERCIAL } = require('./reference-data');
 const { intBetween, floatBetween, pick, pickWeighted, chance, insertInBatches, imageUrls } = require('./seed-helpers');
 
-/** The dataset spans 2015-2024; depreciation is measured from the newest year. */
 const NEWEST_YEAR = 2024;
 const OLDEST_YEAR = 2015;
 
-/** Branch weights: cars dominate a real marketplace, motorcycles are next. */
 const BRANCHES = [
   { name: 'cars', weight: 70, entries: CARS },
   { name: 'motorcycles', weight: 22, entries: MOTORCYCLES },
@@ -51,7 +29,6 @@ const STATUS_WEIGHTS = [
 
 const CONDITION_LABEL = { new: 'brand new', used: 'used', certified: 'certified pre-owned' };
 
-/** Car transmissions cluster differently from motorcycle and truck ones. */
 function pickTransmission(random, branch, bikeType) {
   if (branch === 'motorcycles') {
     if (bikeType === 'matic') return chance(random, 0.65) ? 'cvt' : 'automatic';
@@ -70,17 +47,12 @@ function pickTransmission(random, branch, bikeType) {
   ]).value;
 }
 
-/** Fuel is constrained by what the model is actually offered with. */
 function pickFuel(random, branch, entry) {
   if (branch === 'motorcycles') return 'gasoline';
   if (branch === 'commercial-vehicles') return chance(random, 0.9) ? 'diesel' : 'gasoline';
   return pick(random, entry.fuel);
 }
 
-/**
- * Depreciate the model's price band by age, then round to a realistic figure.
- * Used cars keep roughly 38% of their value no matter how old they are.
- */
 function computePrice(random, entry, year, condition, branch) {
   const [bandMin, bandMax] = entry.price;
   const asNew = floatBetween(random, bandMin, bandMax);
@@ -92,14 +64,12 @@ function computePrice(random, entry, year, condition, branch) {
 
   const age = NEWEST_YEAR - year;
   const retention = Math.max(0.38, 1 - 0.085 * age);
-  // Small noise so two identical cars do not share a price.
   const value = asNew * retention * floatBetween(random, 0.94, 1.06);
 
   const step = branch === 'motorcycles' ? 100_000 : 500_000;
   return Math.max(step, Math.round(value / step) * step);
 }
 
-/** Mileage follows age and condition. */
 function computeMileage(random, year, condition) {
   if (condition === 'new') return intBetween(random, 0, 150);
 
@@ -143,17 +113,14 @@ function buildDescription(random, { entry, year, condition, mileage, city, trans
   ].join(' ');
 }
 
-/** Dynamic attributes, keyed by the definition key on the listing's branch. */
 function buildAttributes(random, branch, entry) {
   if (branch === 'cars') {
     const attributes = {
       seat_count: pick(random, entry.seats),
       drive_type: pick(random, entry.drive),
-      // Luxury and newer cars are the ones that actually have a sunroof.
       has_sunroof: chance(random, entry.price[1] > 500_000_000 ? 0.45 : 0.08),
     };
 
-    // EVs have no displacement to report.
     const engineCc = pick(random, entry.engineCc);
     if (engineCc > 0) attributes.engine_cc = engineCc;
 
@@ -173,7 +140,6 @@ function buildAttributes(random, branch, entry) {
   };
 }
 
-/** Map `${branchSlug}:${key}` -> filter definition id, for attribute rows. */
 async function loadDefinitionIds(client) {
   const { rows } = await client.query(
     `SELECT fd.id, fd.key, c.slug AS "categorySlug"
@@ -188,9 +154,6 @@ async function loadDefinitionIds(client) {
   return byBranchAndKey;
 }
 
-/**
- * @returns {Promise<{ listings: number, images: number, attributes: number }>}
- */
 async function seedListings(client, { random, count, sellerIds, idsBySlug }) {
   const definitionIds = await loadDefinitionIds(client);
 
@@ -203,7 +166,6 @@ async function seedListings(client, { random, count, sellerIds, idsBySlug }) {
     const entry = pick(random, branch.entries);
 
     const condition = pickWeighted(random, CONDITION_WEIGHTS).value;
-    // Only the newest model year can plausibly be sold as new.
     const year = condition === 'new' ? NEWEST_YEAR : intBetween(random, OLDEST_YEAR, NEWEST_YEAR);
 
     const city = pickWeighted(random, CITIES);
@@ -215,7 +177,6 @@ async function seedListings(client, { random, count, sellerIds, idsBySlug }) {
     const trim = branch.name === 'motorcycles' ? pick(random, BIKE_TRIMS) : pick(random, CAR_TRIMS);
     const title = buildTitle(year, entry, trim, transmission, branch.name);
 
-    // Where the listing actually sits in the tree.
     const categorySlug = branch.name === 'cars' ? entry.body : entry.type;
     const categoryId = idsBySlug.get(categorySlug);
     if (!categoryId) throw new Error(`No seeded category for slug "${categorySlug}"`);
@@ -242,7 +203,6 @@ async function seedListings(client, { random, count, sellerIds, idsBySlug }) {
       city.province,
       pickWeighted(random, STATUS_WEIGHTS).value,
       chance(random, 0.06),
-      // Long tail: most listings get modest traffic.
       Math.round(Math.pow(random(), 2.2) * 3_000),
       publishedAt,
       publishedAt,
@@ -278,8 +238,6 @@ async function seedListings(client, { random, count, sellerIds, idsBySlug }) {
     { returning: 'id', batchSize: 100 },
   );
 
-  // RETURNING preserves input order within each batch, so index i maps to
-  // listingRows[i] and therefore to imagesByIndex[i] / attributesByIndex[i].
   const imageRows = [];
   const attributeRows = [];
 

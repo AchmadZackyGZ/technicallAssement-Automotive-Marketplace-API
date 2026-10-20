@@ -6,13 +6,6 @@ const db = require('./utils/db');
 const redis = require('./utils/redis');
 const createApp = require('./app');
 
-/**
- * Process entry point.
- *
- * Responsibilities are deliberately narrow: boot the HTTP server, wire up
- * graceful shutdown, and release resources on the way out.
- */
-
 const app = createApp();
 
 const server = app.listen(config.port, () => {
@@ -21,13 +14,10 @@ const server = app.listen(config.port, () => {
     port: config.port,
     apiPrefix: config.apiPrefix,
     docs: `${config.apiPrefix}/docs`,
-    // `connecting` rather than a misleading `disabled` - the Redis client
-    // connects in the background so boot is never blocked by a slow cache.
     redis: redis.status(),
   });
 });
 
-/** Stop accepting connections, drain in-flight requests, release resources. */
 async function shutdown(signal) {
   logger.info('Shutdown signal received', { signal });
 

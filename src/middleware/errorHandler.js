@@ -1,23 +1,10 @@
 'use strict';
 
-/**
- * Terminal error-handling middleware.
- *
- * Translates anything thrown in the request pipeline into the API's uniform
- * error envelope:
- *
- *   { "error": { "code": "...", "message": "...", "details": [...] } }
- *
- * Known error shapes are mapped explicitly (Zod, PostgreSQL, JWT); everything
- * else becomes a 500 with the message hidden in production.
- */
-
 const { ZodError } = require('zod');
 const config = require('../config');
 const logger = require('../utils/logger');
 const { AppError, NotFoundError } = require('../utils/errors');
 
-/** PostgreSQL error codes we can translate into meaningful HTTP responses. */
 const PG_ERROR_MAP = {
   23505: { status: 409, code: 'CONFLICT', message: 'Resource already exists' },
   23503: { status: 409, code: 'FOREIGN_KEY_VIOLATION', message: 'Referenced resource does not exist' },
@@ -30,7 +17,6 @@ function notFound(req, _res, next) {
   next(new NotFoundError(`Route ${req.method} ${req.originalUrl}`));
 }
 
-// eslint-disable-next-line no-unused-vars -- Express identifies handlers by arity
 function errorHandler(error, req, res, _next) {
   let statusCode = 500;
   let code = 'INTERNAL_SERVER_ERROR';

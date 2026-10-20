@@ -1,20 +1,11 @@
 'use strict';
 
-/**
- * Unit tests for the cache policy.
- *
- * These need no Redis server: the redis module's surface is mocked, which lets us
- * assert the behaviour that actually matters - hit/miss accounting, key stability,
- * graceful degradation and invalidation fan-out.
- */
-
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const redis = require('../src/utils/redis');
 const cache = require('../src/utils/cache');
 
-/** Install an in-memory stand-in for the redis module. */
 function useFakeRedis(t, { enabled = true } = {}) {
   const store = new Map();
 

@@ -20,7 +20,8 @@ node_modules
 
 # Tests and documentation are not needed to run the service
 tests
-docs
+docs/*
+!docs/openapi.json
 coverage
 *.md
 !README.md

@@ -1,20 +1,5 @@
 'use strict';
 
-/**
- * Seed accounts.
- *
- * Three roles are created so every authorisation path can be exercised straight
- * after seeding:
- *
- *   admin@automotive.test  / Admin12345   - may create/update categories
- *   buyer@automotive.test  / Buyer12345   - browse-only account
- *   seller1..N@automotive.test / Seller12345 - own the seeded listings
- *
- * All seeded accounts share one bcrypt hash per role. Hashing 27 times would add
- * seconds to every seed run for no security benefit, since these are throwaway
- * demo credentials that the README publishes anyway.
- */
-
 const bcrypt = require('bcryptjs');
 const { insertInBatches } = require('./seed-helpers');
 
@@ -45,9 +30,6 @@ function phoneNumber(random) {
   return `+62${prefix}${a}${b}`;
 }
 
-/**
- * @returns {Promise<{ adminId: string, buyerId: string, sellerIds: string[] }>}
- */
 async function seedUsers(client, { random, sellerCount }) {
   const [adminHash, buyerHash, sellerHash] = await Promise.all([
     bcrypt.hash('Admin12345', 8),

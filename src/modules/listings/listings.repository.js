@@ -1,19 +1,8 @@
 'use strict';
 
-/**
- * Data access for listings.
- *
- * Multi-table writes (listing + images + attributes) go through
- * `db.withTransaction` so a listing can never end up half-created.
- */
-
 const db = require('../../utils/db');
 const { buildListingQuery } = require('./listings.query');
 
-/**
- * Canonical projection. Every read goes through this so the JSON shape is
- * identical everywhere and `search_vector` / `deleted_at` internals never leak.
- */
 const LISTING_COLUMNS = `
   l.id,
   l.seller_id         AS "sellerId",
@@ -41,14 +30,8 @@ const LISTING_COLUMNS = `
   l.deleted_at        AS "deletedAt"
 `;
 
-/**
- * Same projection without the table alias, for statements (UPDATE ... RETURNING)
- * where no alias is in scope. Derived once at load time rather than string-hacked
- * per call.
- */
 const LISTING_COLUMNS_UNALIASED = LISTING_COLUMNS.replace(/l\./g, '');
 
-/** Client field name -> database column, for writes. */
 const FIELD_TO_COLUMN = {
   categoryId: 'category_id',
   title: 'title',
@@ -68,19 +51,12 @@ const FIELD_TO_COLUMN = {
   isFeatured: 'is_featured',
 };
 
-/** Database column -> client field name. Used to route column-backed filters. */
 const COLUMN_TO_FIELD = Object.fromEntries(
   Object.entries(FIELD_TO_COLUMN).map(([field, column]) => [column, field]),
 );
 
-/** Fields a client may set through the `attributes` map when a definition maps to a column. */
 const COLUMN_BACKED_FIELDS = new Set(Object.values(FIELD_TO_COLUMN));
 
-/**
- * NUMERIC comes back from `pg` as a string to avoid precision loss. Prices here
- * are well inside IEEE-754's safe range, so converting to a number gives a
- * friendlier JSON payload without any real risk.
- */
 function mapListing(row) {
   if (!row) return row;
   return {
@@ -108,14 +84,9 @@ function mapAttribute(row) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Images
-// ---------------------------------------------------------------------------
-
 async function insertImages(client, listingId, images) {
   if (!images?.length) return;
 
-  // Exactly one primary: if the caller did not nominate one, promote the first.
   const hasPrimary = images.some((image) => image.isPrimary);
 
   const values = [];
@@ -155,14 +126,6 @@ async function replaceImages(client, listingId, images) {
   await insertImages(client, listingId, images);
 }
 
-// ---------------------------------------------------------------------------
-// EAV attributes
-// ---------------------------------------------------------------------------
-
-/**
- * Upsert attribute rows.
- * @param {Array<{definitionId: string, valueText: ?string, valueNum: ?number, valueBool: ?boolean}>} attributes
- */
 async function upsertAttributes(client, listingId, attributes) {
   if (!attributes?.length) return;
 
@@ -222,13 +185,6 @@ async function findAttributes(listingId) {
   return rows.map(mapAttribute);
 }
 
-// ---------------------------------------------------------------------------
-// Listings
-// ---------------------------------------------------------------------------
-
-/**
- * Insert a listing together with its images and attributes, atomically.
- */
 async function createWithRelations({ listing, images = [], attributes = [] }) {
   return db.withTransaction(async (client) => {
     const { rows } = await client.query(
@@ -273,15 +229,6 @@ async function createWithRelations({ listing, images = [], attributes = [] }) {
   });
 }
 
-/**
- * Update scalar fields, and optionally replace images / merge attributes.
- *
- * @param {object} options
- * @param {object} options.fields      camelCase fields to write
- * @param {?Array} options.images      when provided, replaces the whole gallery
- * @param {Array}  options.attributes  EAV rows to upsert
- * @param {Array}  options.removeAttributeIds definitions whose value should be cleared
- */
 async function updateWithRelations(id, { fields = {}, images = null, attributes = [], removeAttributeIds = [] }) {
   return db.withTransaction(async (client) => {
     const sets = [];
@@ -313,7 +260,6 @@ async function updateWithRelations(id, { fields = {}, images = null, attributes 
   });
 }
 
-/** @param {{ includeRemoved?: boolean }} [options] */
 async function findById(id, { includeRemoved = false } = {}) {
   const { rows } = await db.query(
     `SELECT ${LISTING_COLUMNS}
@@ -325,7 +271,6 @@ async function findById(id, { includeRemoved = false } = {}) {
   return mapListing(rows[0] ?? null);
 }
 
-/** Listing detail including seller, category, gallery and dynamic attributes. */
 async function findByIdWithDetails(id, { includeRemoved = false } = {}) {
   const { rows } = await db.query(
     `SELECT ${LISTING_COLUMNS},
@@ -359,13 +304,11 @@ async function findByIdWithDetails(id, { includeRemoved = false } = {}) {
   return { ...listing, images, attributes };
 }
 
-/** Owner lookup for the ownership guard. */
 async function findOwnerId(id) {
   const row = await db.queryOne('SELECT seller_id AS "sellerId" FROM listings WHERE id = $1', [id]);
   return row?.sellerId ?? null;
 }
 
-/** @returns {Promise<object|null>} the soft-deleted listing, or null if already removed */
 async function softDelete(id) {
   const { rows } = await db.query(
     `UPDATE listings
@@ -378,26 +321,10 @@ async function softDelete(id) {
   return mapListing(rows[0] ?? null);
 }
 
-/** Fire-and-forget-ish counter used by the detail endpoint. */
 async function incrementViewCount(id) {
   await db.query('UPDATE listings SET view_count = view_count + 1 WHERE id = $1', [id]);
 }
 
-/**
- * Browse/search listings with filters, sorting and keyset pagination.
- *
- * Fetches `limit + 1` rows so the caller can detect a further page without a
- * second COUNT query. `primaryImageUrl` is resolved with an index-backed
- * correlated subquery, which keeps the list response useful for a gallery UI
- * without an N+1 round trip.
- *
- * @param {object} options
- * @param {object} options.input        Validated filter input
- * @param {?string[]} options.categoryIds Pre-resolved category scope
- * @param {?object} options.cursor      Decoded cursor payload
- * @param {number} options.limit
- * @returns {Promise<{ rows: object[], sortKey: string }>}
- */
 async function browse({ input, categoryIds = null, cursor = null, limit }) {
   const { conditions, params, orderBy, keysetExpression, sortKey } = buildListingQuery(input, {
     alias: 'l',
@@ -407,8 +334,6 @@ async function browse({ input, categoryIds = null, cursor = null, limit }) {
 
   const where = conditions.length ? `WHERE ${conditions.join('\n         AND ')}` : '';
 
-  // Relevance sorting needs the computed rank in the projection so the cursor
-  // can carry it forward to the next page.
   const rankProjection = sortKey === 'relevance' ? `, ${keysetExpression} AS rank` : '';
 
   params.push(limit + 1);

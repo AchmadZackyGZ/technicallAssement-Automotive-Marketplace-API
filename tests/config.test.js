@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * Configuration tests.
- *
- * Each case runs `src/config` in a fresh child process, because the module reads
- * `process.env` at require time. Spawning is the honest way to test that - it
- * exercises the real boot path, including the `dotenv` load and the production
- * guards, rather than a mocked approximation.
- */
-
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
@@ -17,15 +8,6 @@ const path = require('node:path');
 
 const CONFIG_MODULE = path.join(__dirname, '..', 'src', 'config', 'index.js');
 
-/**
- * Load the config in a child process and return the serialised result.
- *
- * The child runs with its working directory set to the OS temp directory, so
- * `dotenv` finds no `.env` file and each case sees exactly the variables it
- * declares - otherwise the developer's own .env would leak into the assertions.
- *
- * @returns {{ ok: boolean, config?: object, error?: string }}
- */
 function loadConfig(env) {
   const script = `
     try {
@@ -103,9 +85,6 @@ describe('configuration', () => {
   });
 
   it('boots in production from the discrete PG* variables alone', () => {
-    // Regression test. envInt/envBool used to call env(name) without forwarding
-    // their fallback, which made every optional PG* variable mandatory in
-    // production - the app refused to start unless all of them were set.
     const result = loadConfig({
       NODE_ENV: 'production',
       JWT_SECRET: 'a'.repeat(40),

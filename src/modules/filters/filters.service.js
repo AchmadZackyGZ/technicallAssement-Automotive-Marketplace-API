@@ -1,27 +1,5 @@
 'use strict';
 
-/**
- * Facet computation.
- *
- * Two ideas drive this file:
- *
- * 1. DISJUNCTIVE FACETS.
- *    A facet's counts are computed with that facet's own filter removed, and
- *    every other filter still applied. This is what makes facets usable: after
- *    filtering to Toyota, the make facet must still list Honda with its count,
- *    otherwise there is no way to switch. Meanwhile the city facet should only
- *    count cities within Toyota.
- *
- * 2. ONE FILTER TRANSLATOR.
- *    Counts are computed from the same WHERE fragment the search itself uses
- *    (see listings.query.js). A facet can therefore never disagree with the
- *    result set it describes.
- *
- * The cost is one small GROUP BY per facet group - around ten indexed
- * aggregations per faceted request. That is acceptable at this data size and is
- * exactly what the Redis cache in front of it exists to absorb.
- */
-
 const db = require('../../utils/db');
 const logger = require('../../utils/logger');
 const cache = require('../../utils/cache');
@@ -29,7 +7,6 @@ const { buildListingQuery } = require('../listings/listings.query');
 const repository = require('./filters.repository');
 const categoriesRepository = require('../categories/categories.repository');
 
-/** Facets backed by a plain column. */
 const COLUMN_FACETS = [
   { key: 'make', label: 'Make', column: 'make', limit: 20 },
   { key: 'model', label: 'Model', column: 'model', limit: 20, dependsOn: ['make'] },
@@ -41,10 +18,6 @@ const COLUMN_FACETS = [
   { key: 'province', label: 'Province', column: 'location_province', limit: 20 },
 ];
 
-/**
- * Range facets rendered as buckets, matching how a marketplace UI actually
- * presents price and year filters.
- */
 const RANGE_FACETS = [
   {
     key: 'price',
@@ -86,10 +59,8 @@ const RANGE_FACETS = [
   },
 ];
 
-/** Pagination/sort keys are irrelevant to a WHERE clause; drop them. */
 const NON_FILTER_KEYS = ['cursor', 'limit', 'sort', 'facets', 'facetKeys', 'fuzzy'];
 
-/** Copy the filter input without the given keys. */
 function withoutKeys(input, keys) {
   const copy = { ...input };
   for (const key of keys) delete copy[key];
@@ -97,15 +68,6 @@ function withoutKeys(input, keys) {
   return copy;
 }
 
-/**
- * Build the WHERE fragment for a facet group.
- *
- * @param {object} input      Filter input
- * @param {object} options
- * @param {?string[]} options.categoryIds
- * @param {string[]} [options.exclude]  Top-level keys to drop (disjunctive faceting)
- * @param {?string} [options.excludeAttr] Dynamic attribute key to drop
- */
 function buildFacetConditions(input, { categoryIds = null, exclude = [], excludeAttr = null } = {}) {
   const sanitized = withoutKeys(input, exclude);
 
@@ -118,7 +80,6 @@ function buildFacetConditions(input, { categoryIds = null, exclude = [], exclude
   return buildListingQuery(sanitized, { alias: 'l', categoryIds });
 }
 
-/** Count listings per value of a column. */
 async function computeColumnFacet(facet, input, { categoryIds, limit }) {
   const { conditions, params } = buildFacetConditions(input, {
     categoryIds,
@@ -141,7 +102,6 @@ async function computeColumnFacet(facet, input, { categoryIds, limit }) {
   return { key: facet.key, label: facet.label, type: 'enum', values: rows };
 }
 
-/** Bucket counts plus the true min/max, so a UI can render a slider. */
 async function computeRangeFacet(facet, input, { categoryIds }) {
   const { conditions, params } = buildFacetConditions(input, {
     categoryIds,
@@ -150,8 +110,6 @@ async function computeRangeFacet(facet, input, { categoryIds }) {
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : 'WHERE TRUE';
 
-  // One round trip for every bucket: conditional aggregates instead of a UNION
-  // per bucket.
   const bucketExpressions = facet.buckets.map((bucket) => {
     const bounds = [`l.${facet.column} >= $${params.length + 1}`];
     params.push(bucket.min);
@@ -194,14 +152,6 @@ async function computeRangeFacet(facet, input, { categoryIds }) {
   };
 }
 
-/**
- * Count listings per category.
- *
- * With a scope, counts are returned for the scope's direct children and include
- * each child's whole subtree - expressed as a path prefix join, which is what
- * the materialized path is for. Without a scope, listings are grouped by their
- * directly assigned category.
- */
 async function computeCategoryFacet(input, { categoryIds, scopeCategoryId = null }) {
   if (scopeCategoryId) {
     const { conditions, params } = buildFacetConditions(input, {
@@ -251,16 +201,6 @@ async function computeCategoryFacet(input, { categoryIds, scopeCategoryId = null
   return { key: 'category', label: 'Category', type: 'enum', values: rows };
 }
 
-/**
- * Facets for the category-specific filter attributes declared by the
- * definition registry.
- *
- * This is the part that makes the filter architecture dynamic: declare
- * `drive_type` as an enum attribute on Cars and it appears here, and in the
- * search results, with no code change.
- *
- * @param {?object[]} definitions Pre-fetched effective definitions, if available
- */
 async function computeAttributeFacets(input, { categoryIds, scopeCategoryId, facetKeys, definitions = null }) {
   if (!scopeCategoryId) return [];
 
@@ -270,10 +210,8 @@ async function computeAttributeFacets(input, { categoryIds, scopeCategoryId, fac
   for (const definition of effective) {
     if (!definition.isFacetable) continue;
     if (facetKeys && !facetKeys.includes(definition.key)) continue;
-    // Column-backed filters are already covered by COLUMN_FACETS.
     if (definition.source !== 'attribute') continue;
 
-    // eslint-disable-next-line no-await-in-loop -- bounded by the number of declared attributes
     const group = await computeAttributeFacet(definition, input, { categoryIds });
     if (group && (group.type === 'range' || group.values.length)) groups.push(group);
   }
@@ -364,7 +302,6 @@ async function computeAttributeFacet(definition, input, { categoryIds }) {
 
   if (!rows.length) return null;
 
-  // Prefer the registry's own labels when the definition declares options.
   const labelByValue = new Map((definition.options ?? []).map((option) => [option.value, option.label]));
 
   return {
@@ -380,23 +317,9 @@ async function computeAttributeFacet(definition, input, { categoryIds }) {
   };
 }
 
-/**
- * Compute every facet group for a filter set.
- *
- * @param {object} input
- * @param {object} [options]
- * @param {?string[]} [options.categoryIds]  Pre-resolved category scope
- * @param {?string}   [options.scopeCategoryId] The category the scope came from
- * @param {?string[]} [options.facetKeys]    Restrict which groups to compute
- * @param {number}    [options.limit]        Max values per categorical facet
- * @returns {Promise<{ groups: object[], ranges: object, counts: object }>}
- */
 async function computeFacets(input, { categoryIds = null, scopeCategoryId = null, facetKeys = null, limit } = {}) {
   const wants = (key) => !facetKeys || facetKeys.includes(key);
 
-  // When scoped to a category, the registry decides which column facets exist.
-  // That is what keeps "fuel type appears under Cars but not Motorcycles" true
-  // for the facet list as well as for the attribute validation.
   const definitions = scopeCategoryId
     ? await repository.findEffectiveDefinitions(scopeCategoryId)
     : null;
@@ -436,13 +359,6 @@ async function computeFacets(input, { categoryIds = null, scopeCategoryId = null
   };
 }
 
-/**
- * GET /filters - every filter option with counts, plus the category counts.
- *
- * Cached under the request object: this endpoint runs the full set of facet
- * aggregations, and a filter panel is fetched on every page view while the
- * underlying data changes rarely.
- */
 async function getFilterOptions(input, { scopeCategoryId = null } = {}) {
   const cacheInput = { ...input, scopeCategoryId };
   const { value, cached } = await cache.remember('filters', cacheInput, () =>
@@ -486,7 +402,6 @@ async function computeFilterOptions(input, scopeCategoryId) {
   };
 }
 
-/** Definitions across the whole taxonomy, for the unscoped /filters response. */
 async function listAllDefinitions() {
   const { rows } = await db.query(
     `SELECT fd.id,

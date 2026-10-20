@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Data access for the dynamic filter registry.
- *
- * The listings module depends on `findEffectiveDefinitions` to validate incoming
- * attribute payloads; the filters module builds its facet endpoints on top of the
- * same definitions.
- */
-
 const db = require('../../utils/db');
 
 const DEFINITION_COLUMNS = `
@@ -27,16 +19,6 @@ const DEFINITION_COLUMNS = `
   fd.sort_order    AS "sortOrder"
 `;
 
-/**
- * Every filter a category exposes: its own definitions plus those inherited from
- * its ancestors.
- *
- * This is the payoff of the materialized path - inheritance is a prefix join
- * inside the `category_effective_filters` view, not a recursive walk.
- *
- * @param {string} categoryId
- * @returns {Promise<object[]>}
- */
 async function findEffectiveDefinitions(categoryId) {
   const { rows } = await db.query(
     `SELECT definition_id AS id,
@@ -61,7 +43,6 @@ async function findEffectiveDefinitions(categoryId) {
   return rows;
 }
 
-/** Definitions declared directly on a category (no inheritance). */
 async function findOwnDefinitions(categoryId, { filterableOnly = false } = {}) {
   const { rows } = await db.query(
     `SELECT ${DEFINITION_COLUMNS}
@@ -78,7 +59,6 @@ async function findDefinitionById(id) {
   return db.queryOne(`SELECT ${DEFINITION_COLUMNS} FROM filter_definitions fd WHERE fd.id = $1`, [id]);
 }
 
-/** @returns {Promise<object|null>} */
 async function findDefinitionByKey(categoryId, key) {
   return db.queryOne(
     `SELECT definition_id AS id, key, label, type, source, column_name AS "columnName", unit,
@@ -90,7 +70,6 @@ async function findDefinitionByKey(categoryId, key) {
   );
 }
 
-/** Create a definition. Used by the seed script and any future admin API. */
 async function createDefinition({
   categoryId,
   key,

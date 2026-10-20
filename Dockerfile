@@ -38,6 +38,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json ./
 COPY src ./src
 COPY scripts ./scripts
+COPY docs/openapi.json ./docs/openapi.json
 COPY docker-entrypoint.sh ./
 
 RUN chmod +x docker-entrypoint.sh

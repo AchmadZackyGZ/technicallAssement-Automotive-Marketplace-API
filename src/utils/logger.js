@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Minimal structured logger.
- *
- * Kept dependency-free on purpose: the assessment values simple, well-executed
- * solutions, and a tiny wrapper around `console` with level filtering and
- * ISO timestamps covers everything this service needs.
- */
-
 const config = require('../config');
 
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -29,13 +21,10 @@ function write(level, message, meta) {
 
   const line = JSON.stringify(entry);
   if (level === 'error') {
-    // eslint-disable-next-line no-console
     console.error(line);
   } else if (level === 'warn') {
-    // eslint-disable-next-line no-console
     console.warn(line);
   } else {
-    // eslint-disable-next-line no-console
     console.log(line);
   }
 }

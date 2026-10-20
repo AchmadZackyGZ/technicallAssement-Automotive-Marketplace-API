@@ -1,11 +1,3 @@
--- ===========================================================================
--- 005 - Listing images
--- ===========================================================================
--- A separate table (1:N) instead of a TEXT[] column: images need ordering, an
--- alt text for accessibility/SEO, and a "primary" flag that must be unique per
--- listing. That last constraint is impossible to express on an array column.
--- ===========================================================================
-
 CREATE TABLE listing_images (
   id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id UUID         NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
@@ -21,7 +13,6 @@ CREATE TABLE listing_images (
 
 CREATE INDEX listing_images_listing_idx ON listing_images (listing_id, position);
 
--- At most one cover image per listing.
 CREATE UNIQUE INDEX listing_images_one_primary_idx
   ON listing_images (listing_id) WHERE is_primary;
 
